@@ -133,7 +133,7 @@ func renderHeaderRight(ticker *models.Ticker) []string {
 	// ASCII art of ticker symbol
 	asciiArt := renderTickerASCII(ticker.Symbol)
 
-	result := []string{binarySymbol, contractAddress}
+	result := []string{contractAddress, ""}
 	result = append(result, asciiArt...)
 
 	return result
