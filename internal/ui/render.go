@@ -120,14 +120,15 @@ func renderHeaderLeft() []string {
 // renderHeaderRight returns the right side of the header (binary + address + ASCII art)
 func renderHeaderRight(ticker *models.Ticker) []string {
 	// Binary token symbol
-	binarySymbol := "$ "
+	binarySymbol := ""
 	for _, char := range ticker.Symbol {
 		binarySymbol += fmt.Sprintf("%08b ", byte(char))
 	}
 	binarySymbol = strings.TrimSpace(binarySymbol)
 
 	// Contract address
-	contractAddress := "0x0d01dc56dcaaca66ad901c959b4011ec"
+	headerFg := lipgloss.Color("#dcfe52")
+	contractAddress := lipgloss.NewStyle().Foreground(headerFg).Underline(true).Render("0x0d01dc56dcaaca66ad901c959b4011ec")
 
 	// ASCII art of ticker symbol
 	asciiArt := renderTickerASCII(ticker.Symbol)
