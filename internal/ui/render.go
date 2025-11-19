@@ -206,6 +206,8 @@ func renderMainContent(ticker *models.Ticker) string {
 	b.WriteString(fmt.Sprintf("%s $%.6f\n", label.Render("BID:"), ticker.BidPrice))
 	b.WriteString(fmt.Sprintf("%s $%.6f\n", label.Render("ASK:"), ticker.AskPrice))
 	b.WriteString(fmt.Sprintf("%s $%.2f\n", label.Render("VOLUME:"), ticker.Volume24h))
+	b.WriteString(fmt.Sprintf("%s %.6f%%\n", label.Render("FUNDING:"), ticker.FundingRate*100))
+	b.WriteString(fmt.Sprintf("%s %.2f\n", label.Render("OPEN INT:"), ticker.OpenInterest))
 
 	change := fmt.Sprintf("%.2f%%", ticker.Change24h)
 	changeColor := green

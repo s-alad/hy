@@ -2,12 +2,14 @@ package models
 
 // Ticker represents market ticker data from Hyperliquid
 type Ticker struct {
-	Symbol    string  `json:"symbol"`
-	LastPrice float64 `json:"lastPrice"`
-	BidPrice  float64 `json:"bidPrice"`
-	AskPrice  float64 `json:"askPrice"`
-	Volume24h float64 `json:"volume24h"`
-	Change24h float64 `json:"change24h"`
+	Symbol       string  `json:"symbol"`
+	LastPrice    float64 `json:"lastPrice"`
+	BidPrice     float64 `json:"bidPrice"`
+	AskPrice     float64 `json:"askPrice"`
+	Volume24h    float64 `json:"volume24h"`
+	Change24h    float64 `json:"change24h"`
+	FundingRate  float64 `json:"fundingRate"`
+	OpenInterest float64 `json:"openInterest"`
 }
 
 // MarketData represents comprehensive market data

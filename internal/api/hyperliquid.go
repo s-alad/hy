@@ -26,11 +26,13 @@ type Meta struct {
 }
 
 type AssetCtx struct {
-	DayNtlVlm string   `json:"dayNtlVlm"`
-	PrevDayPx string   `json:"prevDayPx"`
-	MarkPx    string   `json:"markPx"`
-	MidPx     *string  `json:"midPx"`
-	ImpactPxs []string `json:"impactPxs"`
+	DayNtlVlm    string   `json:"dayNtlVlm"`
+	PrevDayPx    string   `json:"prevDayPx"`
+	MarkPx       string   `json:"markPx"`
+	MidPx        *string  `json:"midPx"`
+	ImpactPxs    []string `json:"impactPxs"`
+	Funding      string   `json:"funding"`
+	OpenInterest string   `json:"openInterest"`
 }
 
 func (c *Client) GetTicker(symbol string) (*models.Ticker, error) {
@@ -112,12 +114,24 @@ func (c *Client) GetTicker(symbol string) (*models.Ticker, error) {
 		}
 	}
 
+	fundingRate, err := strconv.ParseFloat(ctx.Funding, 64)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing funding: %v", err)
+	}
+
+	openInterest, err := strconv.ParseFloat(ctx.OpenInterest, 64)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing openInterest: %v", err)
+	}
+
 	return &models.Ticker{
-		Symbol:    symbol,
-		LastPrice: markPx,
-		BidPrice:  bidPrice,
-		AskPrice:  askPrice,
-		Volume24h: volume24h,
-		Change24h: change24h,
+		Symbol:       symbol,
+		LastPrice:    markPx,
+		BidPrice:     bidPrice,
+		AskPrice:     askPrice,
+		Volume24h:    volume24h,
+		Change24h:    change24h,
+		FundingRate:  fundingRate,
+		OpenInterest: openInterest,
 	}, nil
 }
