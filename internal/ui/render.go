@@ -167,13 +167,20 @@ func renderTickerASCII(symbol string) []string {
 		if charArt, ok := asciiMap[char]; ok {
 			for i := 0; i < 3; i++ {
 				if i < len(charArt) {
-					if lines[i] != "" {
-						lines[i] += " "
-					}
 					lines[i] += charArt[i]
 				}
 			}
 		}
+	}
+
+	// Add USDC ASCII to the right
+	usdc := []string{
+		"░░░█░█░█░█▀▀░█▀▄░█▀▀",
+		"░▄▀░░█░█░▀▀█░█░█░█░░",
+		"░▀░░░▀▀▀░▀▀▀░▀▀░░▀▀▀",
+	}
+	for i := 0; i < 3; i++ {
+		lines[i] += usdc[i]
 	}
 
 	// Add vertical bar dollar sign prefix to each line
