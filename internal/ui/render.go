@@ -3,10 +3,10 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"hy/internal/flex"
 	"hy/internal/models"
 )
 
@@ -24,78 +24,77 @@ func Render(ticker *models.Ticker, err error, width int) string {
 		width = 80
 	}
 
-	header := renderHeader(ticker, width)
-	mainContent := renderMainContent(ticker)
+	// Calculate content width (width - green bar width)
+	contentWidth := width - 2
+	if contentWidth < 0 {
+		contentWidth = 0
+	}
 
-	// Combine header and main content with exact same spacing
-	combined := header + mainContent
+	// Header
+	header := renderHeaderNode(ticker, contentWidth)
 
-	// Apply padding to combined content (maintains exact spacing)
-	content := lipgloss.NewStyle().Padding(1, 2).Render(combined)
+	// Main Content
+	mainContent := flex.NewContent(renderMainContent(ticker))
 
-	// Apply left green column
-	return applyLeftColumn(content, 2)
+	// Combine Header and Main Content
+	contentCol := flex.New(flex.Column).
+		Add(header).
+		Add(mainContent).
+		WithStyle(lipgloss.NewStyle().Padding(1, 2))
+
+	// Render content to get height
+	renderedContent := contentCol.Render(contentWidth, 0)
+	contentHeight := lipgloss.Height(renderedContent)
+
+	// Render green bar
+	greenBar := lipgloss.NewStyle().
+		Background(lipgloss.Color("#dcfe52")).
+		Width(2).
+		Height(contentHeight).
+		Render("")
+
+	// Combine
+	return lipgloss.JoinHorizontal(lipgloss.Top, greenBar, renderedContent)
 }
 
-// renderHeader renders the header section combining left and right
-func renderHeader(ticker *models.Ticker, width int) string {
+func renderHeaderNode(ticker *models.Ticker, width int) *flex.Node {
 	headerFg := lipgloss.Color("#dcfe52")
 	headerStyle := lipgloss.NewStyle().
 		Foreground(headerFg).
-		Bold(true).
-		Width(width).
-		Align(lipgloss.Left).
-		Padding(0, 1)
-	headerLineStyle := lipgloss.NewStyle().
-		Foreground(headerFg).
-		Width(width)
+		Bold(true)
 
 	leftLines := renderHeaderLeft()
-	rightLines := renderHeaderRight(ticker)
+	leftContent := strings.Join(leftLines, "\n")
 
-	var b strings.Builder
-	for i, leftLine := range leftLines {
-		if i == 0 {
-			// First line: combine left and right (binary token)
-			spacing := width - len(leftLine) - len(rightLines[0]) - 2
-			if spacing < 0 {
-				spacing = 1
-			}
-			lineWithRight := leftLine + strings.Repeat(" ", spacing) + rightLines[0]
-			b.WriteString(headerStyle.Render(lineWithRight))
-		} else if i == 1 {
-			// Second line: combine left and right (contract address)
-			spacing := width - len(leftLine) - len(rightLines[1]) - 2
-			if spacing < 0 {
-				spacing = 1
-			}
-			lineWithRight := leftLine + strings.Repeat(" ", spacing) + rightLines[1]
-			b.WriteString(headerStyle.Render(lineWithRight))
-		} else if i >= 2 && i < len(rightLines) {
-			// ASCII art lines: align flush to the right
-			asciiLine := rightLines[i]
-			// Count visual width (rune count) not byte length
-			leftRuneCount := utf8.RuneCountInString(leftLine)
-			asciiRuneCount := utf8.RuneCountInString(asciiLine)
-			// Offset to align properly with the right edge
-			spacing := width - leftRuneCount - asciiRuneCount - 5
-			if spacing < 0 {
-				spacing = 0
-			}
-			lineWithRight := leftLine + strings.Repeat(" ", spacing) + asciiLine
-			b.WriteString(headerStyle.Render(lineWithRight))
-		} else {
-			// Remaining lines: just left
-			b.WriteString(headerStyle.Render(leftLine))
-		}
-		b.WriteString("\n")
-	}
+	rightLines := renderHeaderRight(ticker)
+	rightContent := strings.Join(rightLines, "\n")
+
+	// Header Row
+	headerRow := flex.New(flex.Row).
+		Justify(flex.JustifySpaceBetween).
+		Add(
+			flex.NewContent(leftContent).WithStyle(headerStyle),
+			flex.NewContent(rightContent).WithStyle(headerStyle.Copy().Align(lipgloss.Right)),
+		).
+		WithWidth(width - 4) // Adjust for padding (left 2, right 2? No, padding is applied to container)
+	// The container has Padding(1, 2). So horizontal padding is 2+2=4.
+	// We passed contentWidth to renderHeaderNode.
+	// contentWidth is (TotalWidth - 2).
+	// The contentCol has Padding(1, 2).
+	// So available width for headerRow is contentWidth - 4.
 
 	// Green underline
-	b.WriteString(headerLineStyle.Render(strings.Repeat("─", width)))
-	b.WriteString("\n\n")
+	// We want the underline to span the full width of the content area (excluding padding?)
+	// The original code had: width(width).
+	// But here we are inside padding.
+	// Let's make it span the available width.
+	underline := flex.NewContent(strings.Repeat("─", width-4)).
+		WithStyle(lipgloss.NewStyle().Foreground(headerFg))
 
-	return b.String()
+	return flex.New(flex.Column).
+		Add(headerRow).
+		Add(underline).
+		Add(flex.NewContent("\n"))
 }
 
 // renderHeaderLeft returns the left side of the header (HY ASCII art)
@@ -136,7 +135,16 @@ func renderHeaderRight(ticker *models.Ticker) []string {
 	result := []string{contractAddress, ""}
 	result = append(result, asciiArt...)
 
-	return result
+	// Prepend binary symbol? Original code had it.
+	// Original code:
+	// Line 0: binary
+	// Line 1: address
+	// Line 2+: ascii
+
+	finalResult := []string{binarySymbol, contractAddress, ""}
+	finalResult = append(finalResult, asciiArt...)
+
+	return finalResult
 }
 
 // renderTickerASCII converts ticker symbol to ASCII art
@@ -200,21 +208,4 @@ func renderMainContent(ticker *models.Ticker) string {
 		lipgloss.NewStyle().Foreground(changeColor).Render(change)))
 
 	return b.String()
-}
-
-// applyLeftColumn applies the green left column to the content
-func applyLeftColumn(content string, columnWidth int) string {
-	leftColumnStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#dcfe52")).
-		Width(columnWidth)
-
-	contentLines := strings.Split(content, "\n")
-	var result strings.Builder
-	for _, line := range contentLines {
-		result.WriteString(leftColumnStyle.Render(" "))
-		result.WriteString(line)
-		result.WriteString("\n")
-	}
-
-	return result.String()
 }
