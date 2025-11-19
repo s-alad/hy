@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"hy/internal/models"
@@ -18,8 +19,22 @@ func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 10 * time.Second}}
 }
 
+type Meta struct {
+	Universe []struct {
+		Name string `json:"name"`
+	} `json:"universe"`
+}
+
+type AssetCtx struct {
+	DayNtlVlm string   `json:"dayNtlVlm"`
+	PrevDayPx string   `json:"prevDayPx"`
+	MarkPx    string   `json:"markPx"`
+	MidPx     *string  `json:"midPx"`
+	ImpactPxs []string `json:"impactPxs"`
+}
+
 func (c *Client) GetTicker(symbol string) (*models.Ticker, error) {
-	body, _ := json.Marshal(map[string]string{"type": "allMids"})
+	body, _ := json.Marshal(map[string]string{"type": "metaAndAssetCtxs"})
 	req, _ := http.NewRequest("POST", "https://api.hyperliquid.xyz/info", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -29,25 +44,80 @@ func (c *Client) GetTicker(symbol string) (*models.Ticker, error) {
 	}
 	defer resp.Body.Close()
 
-	var data map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	var response []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, err
 	}
 
-	priceStr, ok := data[symbol]
-	if !ok {
+	if len(response) < 2 {
+		return nil, fmt.Errorf("unexpected response format")
+	}
+
+	var meta Meta
+	if err := json.Unmarshal(response[0], &meta); err != nil {
+		return nil, err
+	}
+
+	var assetCtxs []AssetCtx
+	if err := json.Unmarshal(response[1], &assetCtxs); err != nil {
+		return nil, err
+	}
+
+	var index = -1
+	for i, u := range meta.Universe {
+		if u.Name == symbol {
+			index = i
+			break
+		}
+	}
+
+	if index == -1 {
 		return nil, fmt.Errorf("symbol %s not found", symbol)
 	}
 
-	var price float64
-	if _, err := fmt.Sscanf(priceStr, "%f", &price); err != nil {
-		return nil, err
+	if index >= len(assetCtxs) {
+		return nil, fmt.Errorf("asset context not found for symbol %s", symbol)
+	}
+
+	ctx := assetCtxs[index]
+
+	markPx, err := strconv.ParseFloat(ctx.MarkPx, 64)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing markPx: %v", err)
+	}
+
+	prevDayPx, err := strconv.ParseFloat(ctx.PrevDayPx, 64)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing prevDayPx: %v", err)
+	}
+
+	volume24h, err := strconv.ParseFloat(ctx.DayNtlVlm, 64)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing dayNtlVlm: %v", err)
+	}
+
+	change24h := 0.0
+	if prevDayPx != 0 {
+		change24h = ((markPx - prevDayPx) / prevDayPx) * 100
+	}
+
+	bidPrice := markPx
+	askPrice := markPx
+	if len(ctx.ImpactPxs) >= 2 {
+		if bp, err := strconv.ParseFloat(ctx.ImpactPxs[0], 64); err == nil {
+			bidPrice = bp
+		}
+		if ap, err := strconv.ParseFloat(ctx.ImpactPxs[1], 64); err == nil {
+			askPrice = ap
+		}
 	}
 
 	return &models.Ticker{
 		Symbol:    symbol,
-		LastPrice: price,
-		BidPrice:  price,
-		AskPrice:  price,
+		LastPrice: markPx,
+		BidPrice:  bidPrice,
+		AskPrice:  askPrice,
+		Volume24h: volume24h,
+		Change24h: change24h,
 	}, nil
 }
