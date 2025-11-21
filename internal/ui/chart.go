@@ -78,15 +78,20 @@ func (m *ChartModel) SetCandles(candles []models.Candle) {
 		m.Chart.PushDataSet("close", tslc.TimePoint{Time: t, Value: c.Close})
 	}
 
-	// Draw Candles
-	m.Chart.DrawCandle("open", "high", "low", "close",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("2")), // Bullish (Green)
-		lipgloss.NewStyle().Foreground(lipgloss.Color("1")), // Bearish (Red)
-	)
+	m.draw()
 }
 
 func (m *ChartModel) Resize(width, height int) {
 	m.Width = width
 	m.Height = height
 	m.Chart.Resize(width, height)
+	m.draw()
+}
+
+func (m *ChartModel) draw() {
+	// Draw Candles
+	m.Chart.DrawCandle("open", "high", "low", "close",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("2")), // Bullish (Green)
+		lipgloss.NewStyle().Foreground(lipgloss.Color("1")), // Bearish (Red)
+	)
 }
