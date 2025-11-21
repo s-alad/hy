@@ -10,7 +10,7 @@ import (
 	"hy/internal/models"
 )
 
-func Render(ticker *models.Ticker, chart *ChartModel, err error, width int) string {
+func Render(ticker *models.Ticker, chart *ChartModel, err error, width int, interval string) string {
 	if err != nil {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).
 			Render(fmt.Sprintf("Error: %v", err))
@@ -35,14 +35,26 @@ func Render(ticker *models.Ticker, chart *ChartModel, err error, width int) stri
 
 	// Main Content
 	statsContent := renderMainContent(ticker)
-	var finalContent string
 
+	// Render Chart with Interval Label
+	var chartView string
 	if chart != nil {
-		chartView := chart.View()
-		// Join stats and chart horizontally
-		// We need to make sure we don't overflow width?
-		// Chart already resized in App.Update.
-		// Stats width is roughly fixed or small.
+		// Interval Label
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+		intervalLabel := labelStyle.Render(fmt.Sprintf("Interval: %s", interval))
+
+		// Instructions
+		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // Gray
+		help := helpStyle.Render("(1:1m 2:5m 3:15m 4:1h 5:4h 6:1d)")
+
+		chartView = lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.JoinHorizontal(lipgloss.Left, intervalLabel, "  ", help),
+			chart.View(),
+		)
+	}
+
+	var finalContent string
+	if chartView != "" {
 		finalContent = lipgloss.JoinHorizontal(lipgloss.Top, statsContent, "    ", chartView)
 	} else {
 		finalContent = statsContent

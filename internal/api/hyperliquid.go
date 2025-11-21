@@ -162,8 +162,8 @@ func getDuration(interval string) int64 {
 		return 15 * 60 * 1000
 	case "1h":
 		return 60 * 60 * 1000
-	case "6h":
-		return 6 * 60 * 60 * 1000
+	case "4h":
+		return 4 * 60 * 60 * 1000
 	case "1d":
 		return 24 * 60 * 60 * 1000
 	default:

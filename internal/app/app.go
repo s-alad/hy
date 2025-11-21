@@ -9,18 +9,20 @@ import (
 )
 
 type App struct {
-	api    *api.Client
-	ticker *models.Ticker
-	chart  ui.ChartModel
-	err    error
-	width  int
-	height int
+	api      *api.Client
+	ticker   *models.Ticker
+	chart    ui.ChartModel
+	err      error
+	width    int
+	height   int
+	interval string
 }
 
 func New() *App {
 	return &App{
-		api:   api.NewClient(),
-		chart: ui.NewChartModel(60, 20), // Start with reasonable defaults
+		api:      api.NewClient(),
+		chart:    ui.NewChartModel(60, 20), // Start with reasonable defaults
+		interval: "1h",
 	}
 }
 
@@ -49,8 +51,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "q", "ctrl+c":
 			return a, tea.Quit
+		case "1":
+			a.interval = "1m"
+			return a, a.fetchCandles()
+		case "2":
+			a.interval = "5m"
+			return a, a.fetchCandles()
+		case "3":
+			a.interval = "15m"
+			return a, a.fetchCandles()
+		case "4":
+			a.interval = "1h"
+			return a, a.fetchCandles()
+		case "5":
+			a.interval = "4h"
+			return a, a.fetchCandles()
+		case "6":
+			a.interval = "1d"
+			return a, a.fetchCandles()
 		}
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
@@ -61,7 +82,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and header (approx 10-12 lines tall)
 		sidebarWidth := 35
 		headerHeight := 12
-		
+
 		chartWidth := a.width - sidebarWidth - 4 // -4 for padding
 		chartHeight := a.height - headerHeight
 
@@ -90,6 +111,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
+func (a *App) fetchCandles() tea.Cmd {
+	return func() tea.Msg {
+		candles, err := a.api.GetCandles("HYPE", a.interval)
+		if err != nil {
+			return models.MarketData{Error: err}
+		}
+		return models.MarketData{Candles: candles}
+	}
+}
+
 func (a *App) View() string {
-	return ui.Render(a.ticker, &a.chart, a.err, a.width)
+	return ui.Render(a.ticker, &a.chart, a.err, a.width, a.interval)
 }
