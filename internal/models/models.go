@@ -12,8 +12,19 @@ type Ticker struct {
 	OpenInterest float64 `json:"openInterest"`
 }
 
+// Candle represents a single OHLC candle
+type Candle struct {
+	Time   int64   `json:"t"` // Start time in milliseconds
+	Open   float64 `json:"o"`
+	High   float64 `json:"h"`
+	Low    float64 `json:"l"`
+	Close  float64 `json:"c"`
+	Volume float64 `json:"v"`
+}
+
 // MarketData represents comprehensive market data
 type MarketData struct {
-	Ticker *Ticker
-	Error  error
+	Ticker  *Ticker
+	Candles []Candle
+	Error   error
 }

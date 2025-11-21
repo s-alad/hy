@@ -10,7 +10,7 @@ import (
 	"hy/internal/models"
 )
 
-func Render(ticker *models.Ticker, err error, width int) string {
+func Render(ticker *models.Ticker, chart *ChartModel, err error, width int) string {
 	if err != nil {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).
 			Render(fmt.Sprintf("Error: %v", err))
@@ -34,7 +34,21 @@ func Render(ticker *models.Ticker, err error, width int) string {
 	header := renderHeaderNode(ticker, contentWidth)
 
 	// Main Content
-	mainContent := flex.NewContent(renderMainContent(ticker))
+	statsContent := renderMainContent(ticker)
+	var finalContent string
+
+	if chart != nil {
+		chartView := chart.View()
+		// Join stats and chart horizontally
+		// We need to make sure we don't overflow width?
+		// Chart already resized in App.Update.
+		// Stats width is roughly fixed or small.
+		finalContent = lipgloss.JoinHorizontal(lipgloss.Top, statsContent, "    ", chartView)
+	} else {
+		finalContent = statsContent
+	}
+
+	mainContent := flex.NewContent(finalContent)
 
 	// Combine Header and Main Content
 	contentCol := flex.New(flex.Column).
