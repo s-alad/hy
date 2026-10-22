@@ -1,97 +1,84 @@
 package ui
 
 import (
+	"math"
+	"slices"
+	"strings"
 	"time"
 
-	"hy/internal/models"
-
-	tslc "github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-type ChartModel struct {
-	Chart  tslc.Model
-	Width  int
-	Height int
-}
+var bars = []rune(" ▁▂▃▄▅▆▇█")
 
-func NewChartModel(width, height int) ChartModel {
-	return ChartModel{
-		Chart:  tslc.New(width, height),
-		Width:  width,
-		Height: height,
+// chart draws candles over a volume strip, with a price axis on the left and dates below.
+func (s Screen) chart(w, h int) string {
+	cs := s.Candles
+	if len(cs) == 0 {
+		return lipgloss.Place(w, h, 0, 0, "")
 	}
-}
-
-func (m ChartModel) Init() tea.Cmd {
-	return nil
-}
-
-func (m ChartModel) Update(msg tea.Msg) (ChartModel, tea.Cmd) {
-	var cmd tea.Cmd
-	m.Chart, cmd = m.Chart.Update(msg)
-	return m, cmd
-}
-
-func (m ChartModel) View() string {
-	return m.Chart.View()
-}
-
-func (m *ChartModel) SetCandles(candles []models.Candle) {
-	if len(candles) == 0 {
-		return
+	top := 0.0
+	for _, c := range cs {
+		top = max(top, c.H)
 	}
+	lw := len(s.px(top*2)) + 1 // *2 leaves room for the padded top label
+	pw := w - lw - 1
+	cs = cs[max(0, len(cs)-pw):]
 
-	// Calculate min/max Y and Time
-	minTime := time.Unix(candles[0].Time/1000, 0)
-	maxTime := time.Unix(candles[len(candles)-1].Time/1000, 0)
-	minY := candles[0].Low
-	maxY := candles[0].High
+	lo, hi, mv := math.Inf(1), 0.0, 0.0
+	for _, c := range cs {
+		lo, hi, mv = min(lo, c.L), max(hi, c.H), max(mv, c.V)
+	}
+	pad := max((hi-lo)*0.06, hi*1e-4)
+	lo, hi = lo-pad, hi+pad
 
-	for _, c := range candles {
-		if c.Low < minY {
-			minY = c.Low
+	vh := h / 5
+	ch := h - vh - 3
+	y := func(v float64) int { return int(math.Round((hi - v) / (hi - lo) * float64(ch-1))) }
+	grid := make([][]string, ch)
+	for r := range grid {
+		grid[r] = slices.Repeat([]string{" "}, pw)
+	}
+	for x, c := range cs {
+		col := tone(c.C >= c.O)
+		for r := y(c.H); r <= y(c.L); r++ {
+			grid[r][x] = fg(col, "│")
 		}
-		if c.High > maxY {
-			maxY = c.High
+		for r := y(max(c.O, c.C)); r <= y(min(c.O, c.C)); r++ {
+			grid[r][x] = fg(col, "┃")
 		}
 	}
 
-	// Add some padding to Y range
-	padding := (maxY - minY) * 0.1
-	minY -= padding
-	maxY += padding
-
-	// Re-initialize chart with new range
-	m.Chart = tslc.New(m.Width, m.Height,
-		tslc.WithTimeRange(minTime, maxTime),
-		tslc.WithYRange(minY, maxY),
-	)
-
-	// Push data
-	for _, c := range candles {
-		t := time.Unix(c.Time/1000, 0)
-		m.Chart.PushDataSet("open", tslc.TimePoint{Time: t, Value: c.Open})
-		m.Chart.PushDataSet("high", tslc.TimePoint{Time: t, Value: c.High})
-		m.Chart.PushDataSet("low", tslc.TimePoint{Time: t, Value: c.Low})
-		m.Chart.PushDataSet("close", tslc.TimePoint{Time: t, Value: c.Close})
+	var lines []string
+	add := func(label, row string) {
+		lines = append(lines, fgf(dim, "%*s ", lw-1, label)+fg(gray, "│")+row)
+	}
+	for r, row := range grid {
+		label := ""
+		if r%5 == 0 {
+			label = s.px(hi - float64(r)/float64(ch-1)*(hi-lo))
+		}
+		add(label, strings.Join(row, ""))
+	}
+	add("", "")
+	for l := vh - 1; l >= 0; l-- {
+		row := ""
+		for _, c := range cs {
+			if e := int(math.Round(c.V/mv*float64(vh*8))) - l*8; e > 0 {
+				row += fg(tone(c.C >= c.O), string(bars[min(e, 8)]))
+			} else {
+				row += fg(tex, "░")
+			}
+		}
+		add("", row)
 	}
 
-	m.draw()
-}
-
-func (m *ChartModel) Resize(width, height int) {
-	m.Width = width
-	m.Height = height
-	m.Chart.Resize(width, height)
-	m.draw()
-}
-
-func (m *ChartModel) draw() {
-	// Draw Candles
-	m.Chart.DrawCandle("open", "high", "low", "close",
-		lipgloss.NewStyle().Foreground(lipgloss.Color("2")), // Bullish (Green)
-		lipgloss.NewStyle().Foreground(lipgloss.Color("1")), // Bearish (Red)
-	)
+	ticks := []rune(strings.Repeat(" ", pw))
+	for x := 0; x+11 <= len(cs); x += 16 {
+		copy(ticks[x:], []rune(time.UnixMilli(cs[x].Time).Format("01/02 15:04")))
+	}
+	lines = append(lines,
+		strings.Repeat(" ", lw)+fg(gray, "└"+strings.Repeat("─", pw)),
+		strings.Repeat(" ", lw+1)+fg(dim, string(ticks)))
+	return strings.Join(lines, "\n")
 }

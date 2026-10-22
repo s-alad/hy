@@ -1,126 +1,76 @@
 package app
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"hy/internal/api"
-	"hy/internal/models"
 	"hy/internal/ui"
 )
 
-type App struct {
-	api      *api.Client
-	ticker   *models.Ticker
-	chart    ui.ChartModel
-	err      error
-	width    int
-	height   int
-	interval string
-}
+type tick int
 
-func New() *App {
-	return &App{
-		api:      api.NewClient(),
-		chart:    ui.NewChartModel(60, 20), // Start with reasonable defaults
-		interval: "1h",
-	}
+type App struct{ ui.Screen }
+
+func New(m api.Asset, token string) *App {
+	return &App{ui.Screen{Market: m, Token: token, Interval: 3}} // 1h
 }
 
 func (a *App) Init() tea.Cmd {
-	return tea.Batch(
-		func() tea.Msg {
-			ticker, err := a.api.GetTicker("HYPE")
-			if err != nil {
-				return models.MarketData{Error: err}
-			}
-			return models.MarketData{Ticker: ticker}
-		},
-		func() tea.Msg {
-			candles, err := a.api.GetCandles("HYPE", "1h")
-			if err != nil {
-				return models.MarketData{Error: err}
-			}
-			return models.MarketData{Candles: candles}
-		},
-		tea.WindowSize(),
-	)
+	return tea.Batch(a.fetch(true), every(1))
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
+		switch k := msg.String(); k {
 		case "q", "ctrl+c":
 			return a, tea.Quit
-		case "1":
-			a.interval = "1m"
-			return a, a.fetchCandles()
-		case "2":
-			a.interval = "5m"
-			return a, a.fetchCandles()
-		case "3":
-			a.interval = "15m"
-			return a, a.fetchCandles()
-		case "4":
-			a.interval = "1h"
-			return a, a.fetchCandles()
-		case "5":
-			a.interval = "4h"
-			return a, a.fetchCandles()
-		case "6":
-			a.interval = "1d"
-			return a, a.fetchCandles()
+		case "1", "2", "3", "4", "5", "6":
+			a.Interval = int(k[0] - '1')
+			return a, a.fetch(true)
 		}
 	case tea.WindowSizeMsg:
-		a.width = msg.Width
-		a.height = msg.Height
-
-		// Calculate available space for chart
-		// Reserve space for left sidebar stats (approx 30-35 chars wide)
-		// and header (approx 10-12 lines tall)
-		sidebarWidth := 35
-		headerHeight := 12
-
-		chartWidth := a.width - sidebarWidth - 4 // -4 for padding
-		chartHeight := a.height - headerHeight
-
-		if chartWidth < 20 {
-			chartWidth = 20
-		}
-		if chartHeight < 10 {
-			chartHeight = 10
-		}
-
-		a.chart.Resize(chartWidth, chartHeight)
-
-	case models.MarketData:
-		if msg.Error != nil {
-			a.err = msg.Error
-		}
-		if msg.Ticker != nil {
-			a.ticker = msg.Ticker
-		}
-		if msg.Candles != nil {
-			a.chart.SetCandles(msg.Candles)
-		}
+		a.W, a.H = msg.Width, msg.Height
+	case tick:
+		return a, tea.Batch(every(msg+1), a.fetch(msg%5 == 0))
+	case api.Asset:
+		a.Market, a.Err = msg, nil
+	case api.L2Book:
+		a.Book = msg
+	case []api.Trade:
+		a.Trades = msg
+	case []api.Candle:
+		a.Candles = msg
+	case error:
+		a.Err = msg
 	}
-
-	a.chart, cmd = a.chart.Update(msg)
-	return a, cmd
+	return a, nil
 }
 
-func (a *App) fetchCandles() tea.Cmd {
-	return func() tea.Msg {
-		candles, err := a.api.GetCandles("HYPE", a.interval)
-		if err != nil {
-			return models.MarketData{Error: err}
-		}
-		return models.MarketData{Candles: candles}
+// fetch refreshes the book every call and everything else when all is set,
+// keeping well under Hyperliquid's 1200 weight/minute limit.
+func (a *App) fetch(all bool) tea.Cmd {
+	coin, iv := a.Market.Name, api.Intervals[a.Interval]
+	cmds := []tea.Cmd{func() tea.Msg { return result(api.Book(coin)) }}
+	if all {
+		cmds = append(cmds,
+			func() tea.Msg { return result(api.Market(coin)) },
+			func() tea.Msg { return result(api.Trades(coin)) },
+			func() tea.Msg { return result(api.Candles(coin, iv)) },
+		)
 	}
+	return tea.Batch(cmds...)
 }
 
-func (a *App) View() string {
-	return ui.Render(a.ticker, &a.chart, a.err, a.width, a.interval)
+func result[T any](v T, err error) tea.Msg {
+	if err != nil {
+		return err
+	}
+	return v
+}
+
+func every(n tick) tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return n })
 }

@@ -2,246 +2,142 @@ package ui
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 
-	"hy/internal/flex"
-	"hy/internal/models"
+	"hy/internal/api"
 )
 
-func Render(ticker *models.Ticker, chart *ChartModel, err error, width int, interval string) string {
-	if err != nil {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).
-			Render(fmt.Sprintf("Error: %v", err))
-	}
-	if ticker == nil {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).
-			Render("Loading...")
-	}
+var (
+	yellow = lipgloss.Color("#dcfe52")
+	green  = lipgloss.Color("#5af78e")
+	red    = lipgloss.Color("#f85149")
+	white  = lipgloss.Color("#e6edf3")
+	dim    = lipgloss.Color("#7d8790")
+	gray   = lipgloss.Color("#3f474f")
+	tex    = lipgloss.Color("#262c33")
+	ink    = lipgloss.Color("#0c0f12")
 
-	if width == 0 {
-		width = 80
-	}
+	num = message.NewPrinter(language.English)
+)
 
-	// Calculate content width (width - green bar width)
-	contentWidth := width - 2
-	if contentWidth < 0 {
-		contentWidth = 0
-	}
-
-	// Header
-	header := renderHeaderNode(ticker, contentWidth)
-
-	// Main Content
-	statsContent := renderMainContent(ticker)
-
-	// Render Chart with Interval Label
-	var chartView string
-	if chart != nil {
-		// Interval Label
-		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
-		intervalLabel := labelStyle.Render(fmt.Sprintf("Interval: %s", interval))
-
-		// Instructions
-		helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // Gray
-		help := helpStyle.Render("(1:1m 2:5m 3:15m 4:1h 5:4h 6:1d)")
-
-		chartView = lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Left, intervalLabel, "  ", help),
-			chart.View(),
-		)
-	}
-
-	var finalContent string
-	if chartView != "" {
-		finalContent = lipgloss.JoinHorizontal(lipgloss.Top, statsContent, "    ", chartView)
-	} else {
-		finalContent = statsContent
-	}
-
-	mainContent := flex.NewContent(finalContent)
-
-	// Combine Header and Main Content
-	contentCol := flex.New(flex.Column).
-		Add(header).
-		Add(mainContent).
-		WithStyle(lipgloss.NewStyle().Padding(1, 2))
-
-	// Render content to get height
-	renderedContent := contentCol.Render(contentWidth, 0)
-	contentHeight := lipgloss.Height(renderedContent)
-
-	// Render green bar
-	greenBar := lipgloss.NewStyle().
-		Background(lipgloss.Color("#dcfe52")).
-		Width(2).
-		Height(contentHeight).
-		Render("")
-
-	// Combine
-	return lipgloss.JoinHorizontal(lipgloss.Top, greenBar, renderedContent)
+type Screen struct {
+	Market   api.Asset
+	Token    string
+	Book     api.L2Book
+	Trades   []api.Trade
+	Candles  []api.Candle
+	Interval int
+	Err      error
+	W, H     int
 }
 
-func renderHeaderNode(ticker *models.Ticker, width int) *flex.Node {
-	headerFg := lipgloss.Color("#dcfe52")
-	headerStyle := lipgloss.NewStyle().
-		Foreground(headerFg).
-		Bold(true)
-
-	leftLines := renderHeaderLeft()
-	leftContent := strings.Join(leftLines, "\n")
-
-	rightLines := renderHeaderRight(ticker)
-	rightContent := strings.Join(rightLines, "\n")
-
-	// Header Row
-	headerRow := flex.New(flex.Row).
-		Justify(flex.JustifySpaceBetween).
-		Add(
-			flex.NewContent(leftContent).WithStyle(headerStyle),
-			flex.NewContent(rightContent).WithStyle(headerStyle.Copy().Align(lipgloss.Right)),
-		).
-		WithWidth(width - 4) // Adjust for padding (left 2, right 2? No, padding is applied to container)
-	// The container has Padding(1, 2). So horizontal padding is 2+2=4.
-	// We passed contentWidth to renderHeaderNode.
-	// contentWidth is (TotalWidth - 2).
-	// The contentCol has Padding(1, 2).
-	// So available width for headerRow is contentWidth - 4.
-
-	// Green underline
-	// We want the underline to span the full width of the content area (excluding padding?)
-	// The original code had: width(width).
-	// But here we are inside padding.
-	// Let's make it span the available width.
-	underline := flex.NewContent(strings.Repeat("─", width-4)).
-		WithStyle(lipgloss.NewStyle().Foreground(headerFg))
-
-	return flex.New(flex.Column).
-		Add(headerRow).
-		Add(underline).
-		Add(flex.NewContent("\n"))
+// View stacks header, stats and a body of chart | book+trades between two rules.
+// Fixed rows: 2 padding + 6 header + 1 rule + 2 blank + 2 stats + 2 rules + 1 footer = 16.
+func (s Screen) View() string {
+	w, h := max(s.W-6, 60), max(s.H-16, 8)
+	cw := w - 40
+	footer := fg(dim, "1-6 interval   q quit")
+	if s.Err != nil {
+		footer += fg(red, "   "+s.Err.Error())
+	}
+	return frame(s.H, lipgloss.NewStyle().MaxWidth(w).Render(lipgloss.JoinVertical(lipgloss.Left,
+		s.header(w),
+		fg(yellow, strings.Repeat("─", w)),
+		"",
+		s.stats(),
+		"",
+		rule(s.chips(), cw, w, "┬"),
+		lipgloss.JoinHorizontal(lipgloss.Top, s.chart(cw, h), " ", s.side(h)),
+		rule("", cw, w, "┴"),
+		footer,
+	)))
 }
 
-// renderHeaderLeft returns the left side of the header (HY ASCII art)
-func renderHeaderLeft() []string {
-	hyASCII := `
-   __       
-  / /  __ __
- / _ \/ // /
-/_//_/\_, / 
-     /___/  
-	 v1.0.0
-                `
-	hyLines := strings.Split(hyASCII, "\n")
-	cleanHyLines := []string{}
-	for _, line := range hyLines {
-		if strings.TrimSpace(line) != "" {
-			cleanHyLines = append(cleanHyLines, strings.TrimRight(line, " \t"))
+func (s Screen) header(w int) string {
+	name := s.Market.Name
+	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append(
+		[]string{bits(name), lipgloss.NewStyle().Underline(true).Render(s.Token), ""},
+		banner(name+"/USDC")...), "\n"))
+	gap := strings.Repeat(" ", max(0, w-lipgloss.Width(logo)-lipgloss.Width(right)))
+	return bold(yellow, lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, right))
+}
+
+func (s Screen) stats() string {
+	m := s.Market
+	chg := m.MarkPx - m.PrevDayPx
+	next := time.Until(time.Now().Truncate(time.Hour).Add(time.Hour))
+	stat := func(label, value string, c lipgloss.Color) string {
+		return lipgloss.NewStyle().MarginRight(3).Render(fg(yellow, label) + "\n" + bold(c, value))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		stat("MARK", s.px(m.MarkPx), white),
+		stat("ORACLE", s.px(m.OraclePx), white),
+		stat("24H CHANGE", fmt.Sprintf("%+.*f / %+.2f%%", s.dec(), chg, chg/m.PrevDayPx*100), tone(chg >= 0)),
+		stat("24H VOLUME", num.Sprintf("$%.2f", m.DayNtlVlm), white),
+		stat("OPEN INTEREST", num.Sprintf("$%.2f", m.OpenInterest*m.MarkPx), white),
+		stat("FUNDING", fmt.Sprintf("%.4f%%", m.Funding*100), white),
+		stat("COUNTDOWN", time.Time{}.Add(next).Format("15:04:05"), white),
+	)
+}
+
+func (s Screen) chips() string {
+	out := fg(gray, "─ ")
+	for i, iv := range api.Intervals {
+		if i == s.Interval {
+			out += lipgloss.NewStyle().Background(yellow).Foreground(ink).Bold(true).Render(" " + iv.Name + " ")
+		} else {
+			out += fg(dim, " "+iv.Name+" ")
 		}
 	}
-	return cleanHyLines
+	return out + " "
 }
 
-// renderHeaderRight returns the right side of the header (binary + address + ASCII art)
-func renderHeaderRight(ticker *models.Ticker) []string {
-	// Binary token symbol
-	binarySymbol := ""
-	for _, char := range ticker.Symbol {
-		binarySymbol += fmt.Sprintf("%08b ", byte(char))
+// dec is Hyperliquid's price precision: 5 significant figures, at most 6-szDecimals decimals.
+func (s Screen) dec() int {
+	d := 6 - s.Market.SzDecimals
+	if p := s.Market.MarkPx; p > 0 {
+		d = min(d, 4-int(math.Floor(math.Log10(p))))
 	}
-	binarySymbol = strings.TrimSpace(binarySymbol)
-
-	// Contract address
-	headerFg := lipgloss.Color("#dcfe52")
-	contractAddress := lipgloss.NewStyle().Foreground(headerFg).Underline(true).Render("0x0d01dc56dcaaca66ad901c959b4011ec")
-
-	// ASCII art of ticker symbol
-	asciiArt := renderTickerASCII(ticker.Symbol)
-
-	result := []string{contractAddress, ""}
-	result = append(result, asciiArt...)
-
-	// Prepend binary symbol? Original code had it.
-	// Original code:
-	// Line 0: binary
-	// Line 1: address
-	// Line 2+: ascii
-
-	finalResult := []string{binarySymbol, contractAddress, ""}
-	finalResult = append(finalResult, asciiArt...)
-
-	return finalResult
+	return max(d, 0)
 }
 
-// renderTickerASCII converts ticker symbol to ASCII art
-func renderTickerASCII(symbol string) []string {
-	asciiMap := map[rune][]string{
-		'H': {"░█░█", "░█▀█", "░▀░▀"},
-		'Y': {"░█░█", "░░█░", "░░▀░"},
-		'P': {"░█▀█", "░█▀▀", "░▀░░"},
-		'E': {"░█▀▀", "░█▀▀", "░▀▀▀"},
-	}
+func (s Screen) px(v float64) string { return strconv.FormatFloat(v, 'f', s.dec(), 64) }
+func (s Screen) sz(v float64) string { return num.Sprintf("%.*f", s.Market.SzDecimals, v) }
 
-	// Default to 3 lines
-	lines := make([]string, 3)
-	for i := range lines {
-		lines[i] = ""
-	}
-
-	// Build ASCII art character by character
-	for _, char := range symbol {
-		if charArt, ok := asciiMap[char]; ok {
-			for i := 0; i < 3; i++ {
-				if i < len(charArt) {
-					lines[i] += charArt[i]
-				}
-			}
-		}
-	}
-
-	// Add USDC ASCII to the right
-	usdc := []string{
-		"░░░█░█░█░█▀▀░█▀▄░█▀▀",
-		"░▄▀░░█░█░▀▀█░█░█░█░░",
-		"░▀░░░▀▀▀░▀▀▀░▀▀░░▀▀▀",
-	}
-	for i := 0; i < 3; i++ {
-		lines[i] += usdc[i]
-	}
-
-	// Add vertical bar dollar sign prefix to each line
-	prefixes := []string{"| ", "$ ", "| "}
-	for i := range lines {
-		if i < len(prefixes) {
-			lines[i] = prefixes[i] + lines[i]
-		}
-	}
-
-	return lines
+func rule(head string, cw, w int, joint string) string {
+	return head + fg(gray, strings.Repeat("─", max(0, cw+1-lipgloss.Width(head)))+joint+strings.Repeat("─", w-cw-2))
 }
 
-// renderMainContent renders the main content section
-func renderMainContent(ticker *models.Ticker) string {
-	label := lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	green := lipgloss.Color("2")
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%s/USDC\n\n", ticker.Symbol))
-	b.WriteString(fmt.Sprintf("%s $%.6f\n", label.Render("PRICE:"), ticker.LastPrice))
-	b.WriteString(fmt.Sprintf("%s $%.6f\n", label.Render("BID:"), ticker.BidPrice))
-	b.WriteString(fmt.Sprintf("%s $%.6f\n", label.Render("ASK:"), ticker.AskPrice))
-	b.WriteString(fmt.Sprintf("%s $%.2f\n", label.Render("VOLUME:"), ticker.Volume24h))
-	b.WriteString(fmt.Sprintf("%s %.6f%%\n", label.Render("FUNDING:"), ticker.FundingRate*100))
-	b.WriteString(fmt.Sprintf("%s %.2f\n", label.Render("OPEN INT:"), ticker.OpenInterest))
-
-	change := fmt.Sprintf("%.2f%%", ticker.Change24h)
-	changeColor := green
-	if ticker.Change24h < 0 {
-		changeColor = lipgloss.Color("1")
-	}
-	b.WriteString(fmt.Sprintf("%s %s\n", label.Render("24H CHANGE:"),
-		lipgloss.NewStyle().Foreground(changeColor).Render(change)))
-
-	return b.String()
+func frame(h int, s string) string {
+	s = lipgloss.NewStyle().Padding(1, 2).Render(s)
+	bar := lipgloss.NewStyle().Background(yellow).Width(2).Height(max(h, lipgloss.Height(s))).Render("")
+	return lipgloss.JoinHorizontal(lipgloss.Top, bar, s)
 }
+
+func bits(s string) string {
+	b := make([]string, len(s))
+	for i := range len(s) {
+		b[i] = fmt.Sprintf("%08b", s[i])
+	}
+	return strings.Join(b, " ")
+}
+
+func tone(up bool) lipgloss.Color {
+	if up {
+		return green
+	}
+	return red
+}
+
+func style(c lipgloss.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c) }
+
+func fg(c lipgloss.Color, s string) string                 { return style(c).Render(s) }
+func bold(c lipgloss.Color, s string) string               { return style(c).Bold(true).Render(s) }
+func fgf(c lipgloss.Color, format string, a ...any) string { return fg(c, fmt.Sprintf(format, a...)) }

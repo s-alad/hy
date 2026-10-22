@@ -5,220 +5,112 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
-
-	"hy/internal/models"
 )
 
-type Client struct {
-	http *http.Client
-}
+var client = &http.Client{Timeout: 10 * time.Second}
 
-func NewClient() *Client {
-	return &Client{http: &http.Client{Timeout: 10 * time.Second}}
-}
-
-type Meta struct {
-	Universe []struct {
-		Name string `json:"name"`
-	} `json:"universe"`
-}
+type req map[string]any
 
 type AssetCtx struct {
-	DayNtlVlm    string   `json:"dayNtlVlm"`
-	PrevDayPx    string   `json:"prevDayPx"`
-	MarkPx       string   `json:"markPx"`
-	MidPx        *string  `json:"midPx"`
-	ImpactPxs    []string `json:"impactPxs"`
-	Funding      string   `json:"funding"`
-	OpenInterest string   `json:"openInterest"`
+	MarkPx, OraclePx, PrevDayPx, Funding, OpenInterest, DayNtlVlm float64 `json:",string"`
 }
 
-func (c *Client) GetTicker(symbol string) (*models.Ticker, error) {
-	body, _ := json.Marshal(map[string]string{"type": "metaAndAssetCtxs"})
-	req, _ := http.NewRequest("POST", "https://api.hyperliquid.xyz/info", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
+type Asset struct {
+	Name       string
+	SzDecimals int
+	AssetCtx
+}
 
-	resp, err := c.http.Do(req)
+type Level struct {
+	Px, Sz float64 `json:",string"`
+}
+
+type L2Book struct {
+	Levels [2][]Level // bids, asks
+}
+
+type Trade struct {
+	Side   string  // B buy, A sell
+	Px, Sz float64 `json:",string"`
+	Time   int64
+}
+
+type Candle struct {
+	Time          int64   `json:"t"`
+	End           int64   `json:"T"`
+	O, H, L, C, V float64 `json:",string"`
+}
+
+type Interval struct {
+	Name string
+	Dur  time.Duration
+}
+
+var Intervals = []Interval{
+	{"1m", time.Minute}, {"5m", 5 * time.Minute}, {"15m", 15 * time.Minute},
+	{"1h", time.Hour}, {"4h", 4 * time.Hour}, {"1d", 24 * time.Hour},
+}
+
+func post(body req, out any) error {
+	b, _ := json.Marshal(body)
+	resp, err := client.Post("https://api.hyperliquid.xyz/info", "application/json", bytes.NewReader(b))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
-
-	var response []json.RawMessage
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return nil, err
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("hyperliquid: %s", resp.Status)
 	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
 
-	if len(response) < 2 {
-		return nil, fmt.Errorf("unexpected response format")
+func Market(coin string) (Asset, error) {
+	var meta struct{ Universe []Asset }
+	var ctxs []AssetCtx
+	if err := post(req{"type": "metaAndAssetCtxs"}, &[]any{&meta, &ctxs}); err != nil {
+		return Asset{}, err
 	}
-
-	var meta Meta
-	if err := json.Unmarshal(response[0], &meta); err != nil {
-		return nil, err
-	}
-
-	var assetCtxs []AssetCtx
-	if err := json.Unmarshal(response[1], &assetCtxs); err != nil {
-		return nil, err
-	}
-
-	var index = -1
-	for i, u := range meta.Universe {
-		if u.Name == symbol {
-			index = i
-			break
+	for i, m := range meta.Universe {
+		if strings.EqualFold(m.Name, coin) && i < len(ctxs) {
+			m.AssetCtx = ctxs[i]
+			return m, nil
 		}
 	}
+	return Asset{}, fmt.Errorf("%s not found", coin)
+}
 
-	if index == -1 {
-		return nil, fmt.Errorf("symbol %s not found", symbol)
+func Token(name string) (string, error) {
+	var meta struct {
+		Tokens []struct{ Name, TokenID string }
 	}
-
-	if index >= len(assetCtxs) {
-		return nil, fmt.Errorf("asset context not found for symbol %s", symbol)
+	if err := post(req{"type": "spotMeta"}, &meta); err != nil {
+		return "", err
 	}
-
-	ctx := assetCtxs[index]
-
-	markPx, err := strconv.ParseFloat(ctx.MarkPx, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing markPx: %v", err)
-	}
-
-	prevDayPx, err := strconv.ParseFloat(ctx.PrevDayPx, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing prevDayPx: %v", err)
-	}
-
-	volume24h, err := strconv.ParseFloat(ctx.DayNtlVlm, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing dayNtlVlm: %v", err)
-	}
-
-	change24h := 0.0
-	if prevDayPx != 0 {
-		change24h = ((markPx - prevDayPx) / prevDayPx) * 100
-	}
-
-	bidPrice := markPx
-	askPrice := markPx
-	if len(ctx.ImpactPxs) >= 2 {
-		if bp, err := strconv.ParseFloat(ctx.ImpactPxs[0], 64); err == nil {
-			bidPrice = bp
-		}
-		if ap, err := strconv.ParseFloat(ctx.ImpactPxs[1], 64); err == nil {
-			askPrice = ap
+	for _, t := range meta.Tokens {
+		if t.Name == name {
+			return t.TokenID, nil
 		}
 	}
-
-	fundingRate, err := strconv.ParseFloat(ctx.Funding, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing funding: %v", err)
-	}
-
-	openInterest, err := strconv.ParseFloat(ctx.OpenInterest, 64)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing openInterest: %v", err)
-	}
-
-	return &models.Ticker{
-		Symbol:       symbol,
-		LastPrice:    markPx,
-		BidPrice:     bidPrice,
-		AskPrice:     askPrice,
-		Volume24h:    volume24h,
-		Change24h:    change24h,
-		FundingRate:  fundingRate,
-		OpenInterest: openInterest,
-	}, nil
+	return "", nil
 }
 
-type CandleRequest struct {
-	Coin      string `json:"coin"`
-	Interval  string `json:"interval"`
-	StartTime int64  `json:"startTime,omitempty"`
-	EndTime   int64  `json:"endTime,omitempty"`
+func Book(coin string) (b L2Book, err error) {
+	err = post(req{"type": "l2Book", "coin": coin}, &b)
+	return
 }
 
-type rawCandle struct {
-	Time   int64  `json:"t"`
-	Open   string `json:"o"`
-	High   string `json:"h"`
-	Low    string `json:"l"`
-	Close  string `json:"c"`
-	Volume string `json:"v"`
+func Trades(coin string) (t []Trade, err error) {
+	err = post(req{"type": "recentTrades", "coin": coin}, &t)
+	return
 }
 
-func getDuration(interval string) int64 {
-	switch interval {
-	case "1m":
-		return 60 * 1000
-	case "5m":
-		return 5 * 60 * 1000
-	case "15m":
-		return 15 * 60 * 1000
-	case "1h":
-		return 60 * 60 * 1000
-	case "4h":
-		return 4 * 60 * 60 * 1000
-	case "1d":
-		return 24 * 60 * 60 * 1000
-	default:
-		return 60 * 60 * 1000 // Default to 1h
-	}
-}
-
-func (c *Client) GetCandles(symbol string, interval string) ([]models.Candle, error) {
-	endTime := time.Now().UnixMilli()
-	duration := getDuration(interval)
-	// Fetch 100 candles
-	startTime := endTime - (100 * duration)
-
-	reqBody := map[string]interface{}{
-		"type": "candleSnapshot",
-		"req": CandleRequest{
-			Coin:      symbol,
-			Interval:  interval,
-			StartTime: startTime,
-			EndTime:   endTime,
-		},
-	}
-
-	body, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("POST", "https://api.hyperliquid.xyz/info", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var rawCandles []rawCandle
-	if err := json.NewDecoder(resp.Body).Decode(&rawCandles); err != nil {
-		return nil, err
-	}
-
-	var candles []models.Candle
-	for _, rc := range rawCandles {
-		open, _ := strconv.ParseFloat(rc.Open, 64)
-		high, _ := strconv.ParseFloat(rc.High, 64)
-		low, _ := strconv.ParseFloat(rc.Low, 64)
-		close, _ := strconv.ParseFloat(rc.Close, 64)
-		volume, _ := strconv.ParseFloat(rc.Volume, 64)
-
-		candles = append(candles, models.Candle{
-			Time:   rc.Time,
-			Open:   open,
-			High:   high,
-			Low:    low,
-			Close:  close,
-			Volume: volume,
-		})
-	}
-
-	return candles, nil
+func Candles(coin string, iv Interval) (c []Candle, err error) {
+	end := time.Now()
+	err = post(req{"type": "candleSnapshot", "req": req{
+		"coin": coin, "interval": iv.Name,
+		"startTime": end.Add(-300 * iv.Dur).UnixMilli(), "endTime": end.UnixMilli(),
+	}}, &c)
+	return
 }
