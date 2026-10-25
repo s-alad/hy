@@ -34,7 +34,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case api.ActiveAssetCtx:
 		a.Market.AssetCtx, a.Err = msg.Ctx, nil
 	case api.L2Book:
-		a.Book = a.Book.Merge(msg)
+		a.Book = msg
+	case api.L2Change:
+		a.Book = a.Book.Apply(msg)
 	case []api.Trade:
 		a.Trades = append(a.Trades, msg...)
 		a.Trades = a.Trades[max(0, len(a.Trades)-100):]

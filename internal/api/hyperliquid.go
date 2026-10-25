@@ -2,9 +2,13 @@ package api
 
 import (
 	"bytes"
+	"cmp"
+	"compress/flate"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,20 +39,32 @@ type L2Book struct {
 	Levels [2][]Level // bids, asks
 }
 
-// Merge overlays b on the book, keeping its levels deeper than b reaches.
-// The fast feed sends 5 levels every half second; all 20 come every ~5s.
-func (old L2Book) Merge(b L2Book) L2Book {
+// L2Change is an update from the website's undocumented "l2" book feed:
+// drop the levels at R's indices, then set L's levels by price (size 0 removes).
+type L2Change struct {
+	L [2][]struct {
+		P, S float64 `json:",string"`
+	}
+	R [2][]int
+}
+
+// Apply returns the book after c, which Hyperliquid sends every half second.
+func (b L2Book) Apply(c L2Change) L2Book {
 	for side, lv := range b.Levels {
-		if len(lv) == 0 {
-			continue
-		}
-		edge := lv[len(lv)-1].Px
-		for _, l := range old.Levels[side] {
-			if side == 0 && l.Px < edge || side == 1 && l.Px > edge {
-				lv = append(lv, l)
+		var out []Level
+		for i, l := range lv {
+			if !slices.Contains(c.R[side], i) {
+				out = append(out, l)
 			}
 		}
-		b.Levels[side] = lv[:min(len(lv), 20)]
+		for _, l := range c.L[side] {
+			out = slices.DeleteFunc(out, func(o Level) bool { return o.Px == l.P })
+			if l.S > 0 {
+				out = append(out, Level{l.P, l.S})
+			}
+		}
+		slices.SortFunc(out, func(x, y Level) int { return cmp.Compare(x.Px, y.Px) * (2*side - 1) }) // bids desc, asks asc
+		b.Levels[side] = out[:min(len(out), 20)]
 	}
 	return b
 }
@@ -130,9 +146,29 @@ func Candles(coin string, iv Interval) (c []Candle, err error) {
 
 var channels = map[string]func([]byte) (any, error){
 	"activeAssetCtx": decode[ActiveAssetCtx],
-	"l2Book":         decode[L2Book],
+	"l2":             l2,
 	"trades":         decode[[]Trade],
 	"candle":         decode[Candle],
+}
+
+// l2 decodes the book feed: an L2Book snapshot, then L2Changes that arrive
+// plain or deflate-compressed.
+func l2(b []byte) (any, error) {
+	var m struct {
+		S *L2Book
+		U L2Change
+		C []byte
+	}
+	err := json.Unmarshal(b, &m)
+	switch {
+	case err != nil:
+		return nil, err
+	case m.S != nil:
+		return *m.S, nil
+	case m.C != nil:
+		err = json.NewDecoder(flate.NewReader(bytes.NewReader(m.C))).Decode(&m.U)
+	}
+	return m.U, err
 }
 
 // Watch streams coin's context, book, trades and candles for every interval
@@ -143,19 +179,18 @@ func Watch(coin string, send func(any)) error {
 		return err
 	}
 	defer c.Close()
-	subs := []req{
-		{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin},
-		{"type": "l2Book", "coin": coin}, {"type": "l2Book", "coin": coin, "fast": true},
-	}
+	sub := func(method string, s req) error { return c.WriteJSON(req{"method": method, "subscription": s}) }
+	book := req{"type": "l2", "c": coin}
+	subs := []req{{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin}, book}
 	for _, iv := range Intervals {
 		subs = append(subs, req{"type": "candle", "coin": coin, "interval": iv.Name})
 	}
 	for _, s := range subs {
-		if err := c.WriteJSON(req{"method": "subscribe", "subscription": s}); err != nil {
+		if err := sub("subscribe", s); err != nil {
 			return err
 		}
 	}
-	for {
+	for synced := time.Now(); ; {
 		var m struct {
 			Channel string
 			Data    json.RawMessage
@@ -170,6 +205,13 @@ func Watch(coin string, send func(any)) error {
 				return err
 			}
 			send(v)
+		}
+		// l2 only sends changes, so resubscribe each minute for a fresh snapshot
+		if time.Since(synced) > time.Minute {
+			synced = time.Now()
+			if err := errors.Join(sub("unsubscribe", book), sub("subscribe", book)); err != nil {
+				return err
+			}
 		}
 	}
 }
