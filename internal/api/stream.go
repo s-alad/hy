@@ -26,7 +26,7 @@ func (s *Stream) Watch(coin string, iv Interval, g Grouping) {
 	if g.M > 1 {
 		book["m"] = g.M
 	}
-	subs := []req{{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin}, book, {"type": "candle", "coin": coin, "interval": iv.Name}}
+	subs := []req{{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin}, {"type": "bbo", "coin": coin}, book, {"type": "candle", "coin": coin, "interval": iv.Name}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.send("unsubscribe", without(s.subs, subs))
@@ -100,6 +100,7 @@ func without(a, b []req) []req {
 var channels = map[string]func([]byte) (any, error){
 	"activeAssetCtx": decode[ActiveAssetCtx],
 	"l2":             l2,
+	"bbo":            decode[BBO],
 	"trades":         decode[[]Trade],
 	"candle":         decode[Candle],
 }

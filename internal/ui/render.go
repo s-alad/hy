@@ -36,6 +36,7 @@ type Screen struct {
 	Market  api.Asset
 	Book    api.L2Book
 	Fresh   api.L2Change // the book's latest change, flashed
+	BBO     api.BBO
 	Trades  []api.Trade
 	Candles []api.Candle
 	Rates   []api.Funding

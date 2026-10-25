@@ -38,6 +38,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.Market.AssetCtx, a.Err = msg.Ctx, nil
 	case api.L2Book:
 		a.Book = msg
+	case api.BBO:
+		a.BBO = msg
 	case api.L2Change:
 		a.Book, a.Fresh = a.Book.Apply(msg), msg
 	case []api.Trade:

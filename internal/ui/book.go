@@ -61,9 +61,8 @@ func (s Screen) side(h int) string {
 		lines = append(lines, level(1, i))
 	}
 	spread := bold(yellow, "$") + "  "
-	if len(book[0]) > 0 && len(book[1]) > 0 {
-		d := book[1][0].Px - book[0][0].Px
-		spread += fgf(yellow, "%-10s", "SPREAD") + bold(white, fmt.Sprintf("%12s%13.3f%%", s.px(d), d/book[1][0].Px*100))
+	if bid, ask := s.BBO.Levels[0].Px, s.BBO.Levels[1].Px; bid > 0 && ask > 0 {
+		spread += fgf(yellow, "%-10s", "SPREAD") + bold(white, fmt.Sprintf("%12s%13.3f%%", s.px(ask-bid), (ask-bid)/ask*100))
 	}
 	lines = append(lines, spread)
 	for i := range n {

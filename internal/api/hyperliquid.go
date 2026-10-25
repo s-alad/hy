@@ -41,6 +41,12 @@ type L2Book struct {
 	Levels [2][]Level // bids, asks
 }
 
+// BBO is the best bid and ask, ungrouped, so the spread stays true at any grouping.
+type BBO struct {
+	Coin   string
+	Levels [2]Level `json:"bbo"`
+}
+
 // L2Change is an update from the website's undocumented "l2" book feed:
 // drop the levels at R's indices, then set L's levels by price (size 0 removes).
 type L2Change struct {
@@ -101,6 +107,8 @@ func CoinOf(msg any) string {
 	case ActiveAssetCtx:
 		return m.Coin
 	case L2Book:
+		return m.Coin
+	case BBO:
 		return m.Coin
 	case L2Change:
 		return m.C
