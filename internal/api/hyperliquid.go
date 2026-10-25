@@ -33,6 +33,9 @@ type Asset struct {
 	SzDecimals  int
 	MaxLeverage int
 	IsDelisted  bool
+	Tick        int       // the last price move's direction, +1 or -1
+	Ticked      time.Time // and when it came
+	index       int       // in its dex's universe, where the pac feed lists it
 	AssetCtx
 }
 
@@ -113,6 +116,32 @@ func (a Asset) Kind() string {
 type ActiveAssetCtx struct {
 	Coin string
 	Ctx  AssetCtx
+}
+
+// Ctxs are changed context fields per market from the website's pac, sac and fastAssetCtxs
+// feeds: a snapshot on subscribing, then only what changed. pac lists perps by dex in universe order.
+type Ctxs struct {
+	Dexs  map[string][]json.RawMessage
+	Coins map[string]json.RawMessage
+}
+
+// Apply merges the changes into ms, leaving absent fields as they were, and notes price ticks.
+func (c Ctxs) Apply(ms []Asset) {
+	for i := range ms {
+		m := &ms[i]
+		v, ok := c.Coins[m.Name]
+		if d := c.Dexs[m.Dex]; !ok && !m.Spot && m.index < len(d) {
+			v, ok = d[m.index], true
+		}
+		if !ok {
+			continue
+		}
+		old := m.MarkPx
+		json.Unmarshal(v, &m.AssetCtx)
+		if old > 0 && m.MarkPx != old {
+			m.Tick, m.Ticked = cmp.Compare(m.MarkPx, old), time.Now()
+		}
+	}
 }
 
 type Level struct {
@@ -330,7 +359,7 @@ func Markets() ([]Asset, error) {
 			if a.IsDelisted || j >= len(ctxs[i]) {
 				continue
 			}
-			a.Dex, a.AssetCtx, a.Category = dex(a.Name), ctxs[i][j], info[a.Name].Category
+			a.Dex, a.AssetCtx, a.Category, a.index = dex(a.Name), ctxs[i][j], info[a.Name].Category, j
 			a.Base = cmp.Or(info[a.Name].DisplayName, strings.TrimPrefix(a.Name, a.Dex+":"))
 			a.Quote = tokens[m.CollateralToken].display()
 			ms = append(ms, a)
@@ -346,14 +375,6 @@ func Markets() ([]Asset, error) {
 	}
 	slices.SortFunc(ms, func(a, b Asset) int { return cmp.Compare(b.DayNtlVlm, a.DayNtlVlm) })
 	return ms, nil
-}
-
-func Market(q string) (Asset, error) {
-	ms, err := Markets()
-	if err != nil {
-		return Asset{}, err
-	}
-	return Find(ms, q)
 }
 
 // Find looks up a market by any name people use: the API's (xyz:CL, @107), the website's

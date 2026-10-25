@@ -14,14 +14,21 @@ import (
 type App struct {
 	ui.Screen
 	stream *api.Stream
-	listed time.Time // when Markets was last fetched for the picker
+	rated  time.Time // when funding history was last requested
 }
 
-func New(m api.Asset, s *api.Stream) *App {
-	return &App{Screen: ui.Screen{Market: m, Settings: ui.Settings{Interval: 5, FundIv: 1}}, stream: s} // 1h candles, 8h funding
+// New shows market m, or the markets list filtered by q when m is empty.
+func New(m api.Asset, ms []api.Asset, q string, s *api.Stream) *App {
+	return &App{Screen: ui.Screen{Market: m, Markets: ms, Settings: ui.Settings{Interval: 5, FundIv: 1, Picking: m.Name == "", Query: q}}, stream: s} // 1h candles, 8h funding
 }
 
-func (a *App) Init() tea.Cmd { return a.open(a.Market) }
+func (a *App) Init() tea.Cmd {
+	if a.Listing() {
+		a.watch() // just the list's feeds
+		return nil
+	}
+	return a.open(a.Market)
+}
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if c := api.Coin(msg); c != "" && c != a.Market.Name {
@@ -37,12 +44,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.W, a.H = msg.Width, msg.Height
 	case api.ActiveAssetCtx:
-		var cmd tea.Cmd
+		cmd := a.rates() // each hour's funding as it lands
 		if a.Err != nil {
-			cmd = tea.Batch(a.history(), a.rates()) // back after a drop: refill what we missed
+			cmd = tea.Batch(a.history(), cmd) // back after a drop: refill what we missed
 		}
 		a.Market.AssetCtx, a.Err = msg.Ctx, nil
 		return a, cmd
+	case api.Ctxs:
+		msg.Apply(a.Markets)
 	case api.L2Book:
 		a.Book = msg
 	case api.BBO:
@@ -71,8 +80,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case []api.Funding:
 		a.Rates = msg
-	case []api.Asset:
-		a.Markets, a.listed = msg, time.Now()
 	case error:
 		a.Err = msg
 	}
@@ -109,43 +116,51 @@ func (a *App) key(k string) tea.Cmd {
 	case "l":
 		a.Log = !a.Log
 	case "/":
-		a.Picking, a.Query, a.Pick = true, "", 0
-		if time.Since(a.listed) > time.Minute { // the list is 8 requests; keep it a minute
-			return func() tea.Msg { return result(api.Markets()) }
-		}
+		a.Picking, a.Query, a.Pick = true, "", ""
 	}
 	return nil
 }
 
 func (a *App) pick(k tea.KeyMsg) tea.Cmd {
-	ms := a.Choices()
+	ms, i := a.Picked()
 	switch k.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
 	case tea.KeyEsc:
+		if a.Listing() {
+			return tea.Quit
+		}
 		a.Picking = false
 	case tea.KeyEnter:
-		if a.Pick < len(ms) {
-			return a.open(ms[a.Pick])
+		if len(ms) > 0 {
+			return a.open(ms[i])
 		}
 	case tea.KeyTab:
-		a.Tab, a.Pick = (a.Tab+1)%len(ui.Kinds), 0
-	case tea.KeyUp:
-		a.Pick = max(a.Pick-1, 0)
-	case tea.KeyDown:
-		a.Pick = max(min(a.Pick+1, len(ms)-1), 0)
+		a.Tab, a.Pick = (a.Tab+1)%len(ui.Kinds), ""
+	case tea.KeyLeft, tea.KeyRight:
+		a.Sort = a.NextSort(map[tea.KeyType]int{tea.KeyLeft: -1, tea.KeyRight: 1}[k.Type])
+	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown:
+		a.Pick = at(ms, i+map[tea.KeyType]int{tea.KeyUp: -1, tea.KeyDown: 1, tea.KeyPgUp: -a.Rows(), tea.KeyPgDown: a.Rows()}[k.Type])
 	case tea.KeyBackspace:
 		if q := []rune(a.Query); len(q) > 0 {
-			a.Query, a.Pick = string(q[:len(q)-1]), 0
+			a.Query, a.Pick = string(q[:len(q)-1]), ""
 		}
 	case tea.KeyRunes:
-		a.Query, a.Pick = a.Query+string(k.Runes), 0
+		a.Query, a.Pick = a.Query+string(k.Runes), ""
 	}
 	return nil
 }
 
+// at names the market at i, kept within ms.
+func at(ms []api.Asset, i int) string {
+	if len(ms) == 0 {
+		return ""
+	}
+	return ms[max(0, min(i, len(ms)-1))].Name
+}
+
 func (a *App) open(m api.Asset) tea.Cmd {
-	a.Screen = ui.Screen{Settings: a.Settings, Market: m, Markets: a.Markets}
+	a.Screen, a.rated = ui.Screen{Settings: a.Settings, Market: m, Markets: a.Markets}, time.Time{}
 	a.Picking, a.Funding = false, a.Funding && !m.Spot
 	a.watch()
 	return tea.Batch(a.history(), a.rates())
@@ -160,11 +175,14 @@ func (a *App) history() tea.Cmd {
 	return func() tea.Msg { return result(api.Candles(coin, iv)) }
 }
 
-// rates fetches ~100 days of funding when it's missing or an hour old.
+// rates fetches ~100 days of funding when it's missing or the hour's is due
+// (funding lands on the hour; we look from :01), asking at most once a minute.
 func (a *App) rates() tea.Cmd {
-	if n := len(a.Rates); !a.Funding || n > 0 && time.Since(time.UnixMilli(a.Rates[n-1].Time)) < time.Hour {
+	due := time.Now().Add(-time.Minute).Truncate(time.Hour).UnixMilli()
+	if n := len(a.Rates); !a.Funding || time.Since(a.rated) < time.Minute || n > 0 && a.Rates[n-1].Time >= due {
 		return nil
 	}
+	a.rated = time.Now()
 	coin := a.Market.Name
 	return func() tea.Msg { return result(api.FundingHistory(coin, time.Now().Add(-2400*time.Hour))) }
 }

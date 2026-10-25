@@ -19,13 +19,16 @@ type Stream struct {
 	subs []req
 }
 
-// Watch streams coin's context, trades, grouped book and candles at iv.
+// Watch streams every market's context and, given a coin, its trades, grouped book and candles at iv.
 func (s *Stream) Watch(coin string, iv Interval, g Grouping) {
-	book := req{"type": "l2", "c": coin, "s": g.S}
-	if g.M > 1 {
-		book["m"] = g.M
+	subs := []req{{"type": "pac"}, {"type": "sac"}, {"type": "fastAssetCtxs"}}
+	if coin != "" {
+		book := req{"type": "l2", "c": coin, "s": g.S}
+		if g.M > 1 {
+			book["m"] = g.M
+		}
+		subs = append(subs, req{"type": "activeAssetCtx", "coin": coin}, req{"type": "trades", "coin": coin}, req{"type": "bbo", "coin": coin}, book, req{"type": "candle", "coin": coin, "interval": iv.Name})
 	}
-	subs := []req{{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin}, {"type": "bbo", "coin": coin}, book, {"type": "candle", "coin": coin, "interval": iv.Name}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.send("unsubscribe", without(s.subs, subs))
@@ -102,6 +105,9 @@ var channels = map[string]func([]byte) (any, error){
 	"bbo":                decode[BBO],
 	"trades":             decode[[]Trade],
 	"candle":             decode[Candle],
+	"pac":                dexs,
+	"sac":                coins,
+	"fastAssetCtxs":      coins,
 }
 
 // l2 decodes the book feed: an L2Book snapshot, then L2Changes, plain or deflate-compressed.
@@ -121,6 +127,35 @@ func l2(b []byte) (any, error) {
 		err = json.NewDecoder(flate.NewReader(bytes.NewReader(m.C))).Decode(&m.U)
 	}
 	return m.U, err
+}
+
+// dexs decodes the pac feed, [[dex, [ctx...]]...]; coins the sac and fastAssetCtxs feeds, {coin: ctx}.
+func dexs(b []byte) (any, error) {
+	var pairs []json.RawMessage
+	err := inflate(b, &pairs)
+	c := Ctxs{Dexs: map[string][]json.RawMessage{}}
+	for _, p := range pairs {
+		var dex string
+		var ctxs []json.RawMessage
+		json.Unmarshal(p, &[]any{&dex, &ctxs})
+		c.Dexs[dex] = ctxs
+	}
+	return c, err
+}
+
+func coins(b []byte) (any, error) {
+	var c Ctxs
+	err := inflate(b, &c.Coins)
+	return c, err
+}
+
+// inflate decodes the website feeds' framing: a base64 string of raw-deflated JSON.
+func inflate(b []byte, v any) error {
+	var z []byte
+	if err := json.Unmarshal(b, &z); err != nil {
+		return err
+	}
+	return json.NewDecoder(flate.NewReader(bytes.NewReader(z))).Decode(v)
 }
 
 func decode[T any](b []byte) (any, error) {

@@ -51,25 +51,40 @@ type Settings struct {
 	FundIv            int // index into api.FundingIntervals
 	Funding, USD, Log bool
 	Picking           bool
-	Query             string
-	Pick, Tab         int // picker row and kind
+	Query, Pick, Sort string // the picker's filter, picked market and sort column
+	Tab               int    // the picker's kind
 }
 
-// View stacks header, stats and a body of chart | book+trades between two rules.
-// Fixed rows: 2 padding + 6 header + 1 rule + 2 blank + 2 stats + 2 rules + 1 footer = 16.
+// Listing is the markets screen (hy list): the picker with no market behind it.
+func (s Screen) Listing() bool { return s.Market.Name == "" }
+
+// size is the content's width and the body's height: the frame takes 6 columns and
+// 16 rows (2 padding + 6 header + 1 rule + 2 blank + 2 stats + 2 rules + 1 footer).
+func (s Screen) size() (w, h int) { return max(s.W-6, 60), max(s.H-16, 8) }
+
+// Rows is how many list rows the picker shows.
+func (s Screen) Rows() int { _, h := s.size(); return h - 2 }
+
+// View stacks header, stats and a body between two rules: chart | book+trades, or the picker.
 func (s Screen) View() string {
-	w, h := max(s.W-6, 60), max(s.H-16, 8)
-	cw := w - 40
-	plot := s.chart
-	if s.Funding {
-		plot = s.funding
-	}
-	top, body, bottom := rule(s.head(), cw, w, "┬", s.tail()), lipgloss.JoinHorizontal(lipgloss.Top, plot(cw, h), " ", s.side(h)), rule("", cw, w, "┴", "")
-	footer := hints("/", "markets", "← →", "interval", "q", "quit")
+	w, h := s.size()
+	var top, body, bottom, footer string
 	if s.Picking {
+		esc := "back"
+		if s.Listing() {
+			esc = "quit"
+		}
 		top = rule(fg(gray, "─ ")+bold(yellow, "/ ")+bold(white, s.Query)+fg(yellow, "▏ ")+fg(gray, "─ ")+chips(s.Tab, Kinds...)+" ", w-1, w, "", "")
 		body, bottom = s.picker(w, h), rule("", w-1, w, "", "")
-		footer = hints("↑ ↓", "select", "⏎", "open", "⇥", "market type", "esc", "back") + fg(dim, "   type to filter")
+		footer = hints("↑ ↓", "select", "⏎", "open", "⇥", "market type", "← →", "sort", "esc", esc) + fg(dim, "   type to filter")
+	} else {
+		cw := w - 40
+		plot := s.chart
+		if s.Funding {
+			plot = s.funding
+		}
+		top, body, bottom = rule(s.head(), cw, w, "┬", s.tail()), lipgloss.JoinHorizontal(lipgloss.Top, plot(cw, h), " ", s.side(h)), rule("", cw, w, "┴", "")
+		footer = hints("/", "markets", "← →", "interval", "q", "quit")
 	}
 	if s.Err != nil {
 		footer += fg(red, "   "+s.Err.Error())
@@ -79,18 +94,31 @@ func (s Screen) View() string {
 }
 
 func (s Screen) header(w int) string {
-	link := style(yellow).Bold(true).Underline(true).Render(s.Market.Link())
-	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append([]string{"", link, ""}, banner(s.Market.Pair())...), "\n"))
+	link, name := style(yellow).Bold(true).Underline(true).Render(s.Market.Link()), s.Market.Pair()
+	if s.Listing() {
+		link, name = "", "MARKETS"
+	}
+	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append([]string{"", link, ""}, banner(name)...), "\n"))
 	gap := strings.Repeat(" ", max(0, w-lipgloss.Width(logo)-lipgloss.Width(right)))
 	return bold(yellow, lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, right))
 }
 
 func (s Screen) stats() string {
 	m := s.Market
-	chg, c := change(m)
 	stat := func(label, value string, c lipgloss.Color) string {
 		return lipgloss.NewStyle().MarginRight(3).Render(fg(yellow, label) + "\n" + bold(c, value))
 	}
+	if s.Listing() { // the exchange's totals
+		var vol, oi float64
+		for _, m := range s.Markets {
+			vol, oi = vol+m.DayNtlVlm, oi+m.OpenInterest*m.MarkPx
+		}
+		count := func(kind string) string { return fmt.Sprint(len(Filter(s.Markets, kind))) }
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			stat("MARKETS", fmt.Sprint(len(s.Markets)), white), stat("PERPS", count("perps"), white), stat("HIP-3", count("hip3"), white), stat("SPOT", count("spot"), white),
+			stat("24H VOLUME", num.Sprintf("$%.0f", vol), white), stat("OPEN INTEREST", num.Sprintf("$%.0f", oi), white))
+	}
+	chg, c := change(m)
 	if m.Spot {
 		cap := "--"
 		if v := m.Cap(); v > 0 {
@@ -218,10 +246,21 @@ func px(m api.Asset, v float64) string { return strconv.FormatFloat(v, 'f', dec(
 func (s Screen) px(v float64) string   { return px(s.Market, v) }
 func (s Screen) sz(v float64) string   { return num.Sprintf("%.*f", s.Market.SzDecimals, v) }
 
-// change is m's 24h move, e.g. "+0.001467 / +3.44%", and its color.
+// change is m's 24h move, e.g. "+0.001467 / +3.44%", and its color; -- before a market's first day.
 func change(m api.Asset) (string, lipgloss.Color) {
+	if m.PrevDayPx == 0 {
+		return "--", dim
+	}
 	d := m.MarkPx - m.PrevDayPx
-	return fmt.Sprintf("%+.*f / %+.2f%%", dec(m), d, d/m.PrevDayPx*100), tone(d >= 0)
+	return fmt.Sprintf("%+.*f / %+.2f%%", dec(m), d, pct(m)*100), tone(d >= 0)
+}
+
+// pct is m's 24h move as a fraction, 0 before its first day.
+func pct(m api.Asset) float64 {
+	if m.PrevDayPx == 0 {
+		return 0
+	}
+	return (m.MarkPx - m.PrevDayPx) / m.PrevDayPx
 }
 
 // step is a grouping's price increment at price p, e.g. 0.000005 or 1000.
