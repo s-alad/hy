@@ -143,6 +143,9 @@ var Intervals = []Interval{
 	{"1w", 168 * time.Hour}, {"1M", 720 * time.Hour},
 }
 
+// FundingIntervals sum hourly funding per period, like Hyperliquid's funding chart.
+var FundingIntervals = []Interval{{"1h", time.Hour}, {"8h", 8 * time.Hour}, {"1d", 24 * time.Hour}}
+
 // Grouping merges book levels to S significant figures, in steps of M (2 or 5) at 5.
 type Grouping struct{ S, M int }
 
@@ -196,8 +199,18 @@ func Candles(coin string, iv Interval) (c []Candle, err error) {
 	return
 }
 
-// FundingHistory returns coin's hourly funding for the last 500 hours, the most one call allows.
-func FundingHistory(coin string) (f []Funding, err error) {
-	err = post(req{"type": "fundingHistory", "coin": coin, "startTime": time.Now().Add(-500 * time.Hour).UnixMilli()}, &f)
-	return
+// FundingHistory returns coin's hourly funding since a time, 500 hours (the most one call allows) at a time.
+func FundingHistory(coin string, since time.Time) ([]Funding, error) {
+	var all []Funding
+	for start := since.UnixMilli(); ; {
+		var page []Funding
+		if err := post(req{"type": "fundingHistory", "coin": coin, "startTime": start}, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < 500 {
+			return all, nil
+		}
+		start = page[len(page)-1].Time + 1
+	}
 }

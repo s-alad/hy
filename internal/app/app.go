@@ -3,6 +3,7 @@ package app
 import (
 	"cmp"
 	"slices"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -16,7 +17,7 @@ type App struct {
 }
 
 func New(m api.Asset, s *api.Stream) *App {
-	return &App{ui.Screen{Market: m, Settings: ui.Settings{Interval: 5}}, s} // 1h
+	return &App{ui.Screen{Market: m, Settings: ui.Settings{Interval: 5, FundIv: 1}}, s} // 1h candles, 8h funding
 }
 
 func (a *App) Init() tea.Cmd { return a.open(a.Market) }
@@ -83,7 +84,12 @@ func (a *App) key(k string) tea.Cmd {
 	case "q", "ctrl+c":
 		return tea.Quit
 	case "left", "right":
-		i := max(0, min(len(api.Intervals)-1, a.Interval+map[string]int{"left": -1, "right": 1}[k]))
+		d := map[string]int{"left": -1, "right": 1}[k]
+		if a.Funding {
+			a.FundIv = max(0, min(len(api.FundingIntervals)-1, a.FundIv+d))
+			return nil
+		}
+		i := max(0, min(len(api.Intervals)-1, a.Interval+d))
 		if i == a.Interval {
 			return nil
 		}
@@ -93,6 +99,8 @@ func (a *App) key(k string) tea.Cmd {
 	case "f":
 		a.Funding = !a.Funding
 		return a.rates()
+	case "p":
+		a.Funding = false
 	case "g":
 		a.Group = (a.Group + 1) % len(api.Groupings)
 		a.watch()
@@ -150,12 +158,13 @@ func (a *App) history() tea.Cmd {
 	return func() tea.Msg { return result(api.Candles(coin, iv)) }
 }
 
+// rates fetches ~100 days of funding, enough for the daily view, when it's missing or an hour old.
 func (a *App) rates() tea.Cmd {
-	if !a.Funding {
+	if n := len(a.Rates); !a.Funding || n > 0 && time.Since(time.UnixMilli(a.Rates[n-1].Time)) < time.Hour {
 		return nil
 	}
 	coin := a.Market.Name
-	return func() tea.Msg { return result(api.FundingHistory(coin)) }
+	return func() tea.Msg { return result(api.FundingHistory(coin, time.Now().Add(-2400*time.Hour))) }
 }
 
 func result[T any](v T, err error) tea.Msg {

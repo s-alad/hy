@@ -95,9 +95,18 @@ func (s Screen) chart(w, h int) string {
 	return axes(head, labels, rows, times, api.Intervals[s.Interval].Dur, lw, pw)
 }
 
-// funding draws hourly funding as a step line around zero.
+// funding draws funding summed per hour, 8 hours or day as a step line around zero.
 func (s Screen) funding(w, h int) string {
-	rs := s.Rates
+	iv := api.FundingIntervals[s.FundIv].Dur
+	var rs []api.Funding
+	for _, r := range s.Rates {
+		t := r.Time / iv.Milliseconds() * iv.Milliseconds()
+		if n := len(rs); n > 0 && rs[n-1].Time == t {
+			rs[n-1].FundingRate += r.FundingRate
+		} else {
+			rs = append(rs, api.Funding{Time: t, FundingRate: r.FundingRate})
+		}
+	}
 	if len(rs) == 0 {
 		return lipgloss.Place(w, h, 0, 0, "")
 	}
@@ -145,7 +154,7 @@ func (s Screen) funding(w, h int) string {
 	}
 	now, pct := s.Market.Funding*100, func(v float64) string { return fmt.Sprintf("%.4f%%", v) }
 	head := readout("NOW", pct(now), "8H", pct(now*8), "APR", fmt.Sprintf("%.2f%%", now*24*365), "AVG", pct(sum/float64(len(rs))*100))
-	return axes(head, labels, join(g), times, time.Hour, lw, pw)
+	return axes(head, labels, join(g), times, iv, lw, pw)
 }
 
 // steps returns round values 1, 2 or 5 × 10^k apart between lo and hi, about one per four rows.

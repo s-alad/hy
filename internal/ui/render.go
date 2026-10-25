@@ -48,6 +48,7 @@ type Screen struct {
 type Settings struct {
 	W, H              int
 	Interval, Group   int
+	FundIv            int // index into api.FundingIntervals
 	Funding, USD, Log bool
 	Picking           bool
 	Query             string
@@ -64,13 +65,12 @@ func (s Screen) View() string {
 		plot = s.funding
 	}
 	top, body, bottom := rule(s.head(), cw, w, "┬", s.tail()), lipgloss.JoinHorizontal(lipgloss.Top, plot(cw, h), " ", s.side(h)), rule("", cw, w, "┴", "")
-	keys := "/ markets   ← → interval   f funding   g grouping   u units   l log   q quit"
+	footer := hints("/", "markets", "← →", "interval", "q", "quit")
 	if s.Picking {
 		top = rule(fg(gray, "─ ")+bold(yellow, "/ ")+bold(white, s.Query)+fg(yellow, "▏ "), w-1, w, "", "")
 		body, bottom = s.picker(w, h), rule("", w-1, w, "", "")
-		keys = "↑ ↓ select   ⏎ open   esc back   type to filter"
+		footer = hints("↑ ↓", "select", "⏎", "open", "esc", "back") + fg(dim, "   type to filter")
 	}
-	footer := fg(dim, keys)
 	if s.Err != nil {
 		footer += fg(red, "   "+s.Err.Error())
 	}
@@ -107,18 +107,19 @@ func (s Screen) stats() string {
 
 // head is the chart's controls: price or funding, and the price chart's interval and scale.
 func (s Screen) head() string {
+	out := fg(gray, "─ ") + toggle(!s.Funding, "PRICE") + toggle(s.Funding, "FUNDING") + fg(gray, " ─ ")
 	if s.Funding {
-		return fg(gray, "─ ") + chips(1, "PRICE", "FUNDING") + " "
+		return out + chips(s.FundIv, names(api.FundingIntervals)...) + " "
 	}
-	var names []string
-	for _, iv := range api.Intervals {
-		names = append(names, iv.Name)
+	return out + chips(s.Interval, names(api.Intervals)...) + fg(gray, " ─ ") + toggle(s.Log, "LOG") + " "
+}
+
+func names(ivs []api.Interval) []string {
+	var out []string
+	for _, iv := range ivs {
+		out = append(out, iv.Name)
 	}
-	out := fg(gray, "─ ") + chips(0, "PRICE", "FUNDING") + fg(gray, " ─ ") + chips(s.Interval, names...)
-	if s.Log {
-		out += fg(gray, " ─ ") + chips(0, "LOG")
-	}
-	return out + " "
+	return out
 }
 
 // tail is the book's controls: price grouping and size unit.
@@ -127,7 +128,28 @@ func (s Screen) tail() string {
 	if s.USD {
 		unit = "USDC"
 	}
-	return fg(gray, "─ ") + chips(0, step(s.Market.MarkPx, api.Groupings[s.Group])) + fg(gray, " ─ ") + chips(0, unit) + " "
+	return fg(gray, "─ ") + lit("GROUP") + " " + chips(0, step(s.Market.MarkPx, api.Groupings[s.Group])) +
+		fg(gray, " ─ ") + lit("UNIT") + " " + chips(0, unit) + " "
+}
+
+// toggle shows a switch: a chip when on, else its name with the key letter lit.
+func toggle(on bool, name string) string {
+	if on {
+		return chips(0, name)
+	}
+	return " " + lit(name) + " "
+}
+
+// lit shows a control's name with its first letter, the key that drives it, bracketed: [F]UNDING.
+func lit(name string) string { return fg(dim, "[") + bold(yellow, name[:1]) + fg(dim, "]"+name[1:]) }
+
+// hints shows keys and what they do, e.g. "/ markets   q quit".
+func hints(kv ...string) string {
+	var out []string
+	for i := 0; i+1 < len(kv); i += 2 {
+		out = append(out, bold(yellow, kv[i])+fg(dim, " "+kv[i+1]))
+	}
+	return strings.Join(out, "   ")
 }
 
 // chips draws names as controls, highlighting the one at on.
