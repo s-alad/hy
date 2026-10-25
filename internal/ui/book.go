@@ -6,50 +6,69 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"hy/internal/api"
 )
 
 // side draws the order book over recent trades. Its left edge is the body's
 // divider, which turns into a $ at the spread.
 func (s Screen) side(h int) string {
 	div := fg(gray, "│") + "  "
+	n := max((h-4)/4, 1) // book and trades split the height evenly
 	book := s.Book.Levels
 	var tot [2][]float64
 	top := 0.0
 	for i, lv := range book {
 		t := 0.0
-		for _, l := range lv {
+		for _, l := range lv[:min(n, len(lv))] {
 			t += l.Sz
 			tot[i] = append(tot[i], t)
 		}
 		top = max(top, t)
 	}
+	// level shades a row's background by its total like Hyperliquid, lighting
+	// up the whole row when the latest change touched it.
 	level := func(side, i int) string {
-		if i >= len(book[side]) {
+		if i >= len(tot[side]) {
 			return div
 		}
-		c, t, k := tone(side == 0), tot[side][i], int(math.Round(tot[side][i]/top*4))
-		return div + fgf(c, "%-10s", s.px(book[side][i].Px)) + fgf(white, "%10s%11s ", s.sz(book[side][i].Sz), s.sz(t)) +
-			fg(c, strings.Repeat("█", k)) + fg(tex, strings.Repeat("░", 4-k))
+		l, t := book[side][i], tot[side][i]
+		row := fmt.Sprintf("%-10s%12s%14s", s.px(l.Px), s.sz(l.Sz), s.sz(t))
+		k, bg := int(math.Ceil(t/top*float64(len(row)))), depth[side]
+		if slices.ContainsFunc(s.Fresh.L[side], func(f api.L2Level) bool { return f.P == l.Px }) {
+			k, bg = len(row), flash[side]
+		}
+		out := div
+		for j, r := range row {
+			st := style(white)
+			if j < 10 {
+				st = style(tone(side == 0))
+			}
+			if j < k {
+				st = st.Background(bg)
+			}
+			out += st.Render(string(r))
+		}
+		return out
 	}
 
-	n := max((h-4)/4, 1) // book and trades split the height evenly
-	lines := []string{div + fgf(yellow, "%-10s%10s%11s", "PRICE", "SIZE", "TOTAL")}
+	lines := []string{div + fgf(yellow, "%-10s%12s%14s", "PRICE", "SIZE", "TOTAL")}
 	for i := n - 1; i >= 0; i-- {
 		lines = append(lines, level(1, i))
 	}
 	spread := bold(yellow, "$") + "  "
 	if len(book[0]) > 0 && len(book[1]) > 0 {
 		d := book[1][0].Px - book[0][0].Px
-		spread += fgf(yellow, "%-10s", "SPREAD") + bold(white, fmt.Sprintf("%10s%10.3f%%", s.px(d), d/book[1][0].Px*100))
+		spread += fgf(yellow, "%-10s", "SPREAD") + bold(white, fmt.Sprintf("%12s%13.3f%%", s.px(d), d/book[1][0].Px*100))
 	}
 	lines = append(lines, spread)
 	for i := range n {
 		lines = append(lines, level(0, i))
 	}
-	lines = append(lines, fg(gray, "├"+strings.Repeat("─", 38)), div+fgf(yellow, "%-10s%10s%11s", "PRICE", "SIZE", "TIME"))
+	lines = append(lines, fg(gray, "├"+strings.Repeat("─", 38)), div+fgf(yellow, "%-10s%12s%14s", "PRICE", "SIZE", "TIME"))
 	for _, t := range slices.Backward(s.Trades) {
-		lines = append(lines, div+fgf(tone(t.Side == "B"), "%-10s", s.px(t.Px))+fgf(white, "%10s", s.sz(t.Sz))+
-			fgf(dim, "%11s", time.UnixMilli(t.Time).Format("15:04:05")))
+		lines = append(lines, div+fgf(tone(t.Side == "B"), "%-10s", s.px(t.Px))+fgf(white, "%12s", s.sz(t.Sz))+
+			fgf(dim, "%14s", time.UnixMilli(t.Time).Format("15:04:05")))
 	}
 	for len(lines) < h {
 		lines = append(lines, div)

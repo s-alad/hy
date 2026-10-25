@@ -24,6 +24,9 @@ var (
 	tex    = lipgloss.Color("#262c33")
 	ink    = lipgloss.Color("#0c0f12")
 
+	depth = [2]lipgloss.Color{"#183225", "#2f191a"} // bids, asks: green and red at 15%
+	flash = [2]lipgloss.Color{"#27603d", "#5f2625"} // at 35%
+
 	num = message.NewPrinter(language.English)
 )
 
@@ -31,6 +34,7 @@ type Screen struct {
 	Market   api.Asset
 	Token    string
 	Book     api.L2Book
+	Fresh    api.L2Change // the book's latest change, flashed
 	Trades   []api.Trade
 	Candles  []api.Candle
 	Interval int

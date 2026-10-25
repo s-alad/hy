@@ -36,7 +36,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case api.L2Book:
 		a.Book = msg
 	case api.L2Change:
-		a.Book = a.Book.Apply(msg)
+		a.Book, a.Fresh = a.Book.Apply(msg), msg
 	case []api.Trade:
 		a.Trades = append(a.Trades, msg...)
 		a.Trades = a.Trades[max(0, len(a.Trades)-100):]

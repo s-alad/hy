@@ -42,10 +42,12 @@ type L2Book struct {
 // L2Change is an update from the website's undocumented "l2" book feed:
 // drop the levels at R's indices, then set L's levels by price (size 0 removes).
 type L2Change struct {
-	L [2][]struct {
-		P, S float64 `json:",string"`
-	}
+	L [2][]L2Level
 	R [2][]int
+}
+
+type L2Level struct {
+	P, S float64 `json:",string"`
 }
 
 // Apply returns the book after c, which Hyperliquid sends every half second.
