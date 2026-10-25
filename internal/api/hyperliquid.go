@@ -85,6 +85,7 @@ type Trade struct {
 	Side   string  // B buy, A sell
 	Px, Sz float64 `json:",string"`
 	Time   int64
+	Tid    int64 // trade ID
 }
 
 type Candle struct {

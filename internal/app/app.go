@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"slices"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,15 +36,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.W, a.H = msg.Width, msg.Height
 	case api.ActiveAssetCtx:
+		var cmd tea.Cmd
+		if a.Err != nil {
+			cmd = tea.Batch(a.history(), a.rates()) // back after a drop: refill what we missed
+		}
 		a.Market.AssetCtx, a.Err = msg.Ctx, nil
+		return a, cmd
 	case api.L2Book:
 		a.Book = msg
 	case api.BBO:
 		a.BBO = msg
 	case api.L2Change:
 		a.Book, a.Fresh = a.Book.Apply(msg), msg
-	case []api.Trade:
-		a.Trades = append(a.Trades, msg...)
+	case []api.Trade: // a reconnect resends the last 30, so skip ones we have
+		for _, t := range msg {
+			if !slices.ContainsFunc(a.Trades, func(o api.Trade) bool { return o.Tid == t.Tid }) {
+				a.Trades = append(a.Trades, t)
+			}
+		}
+		slices.SortStableFunc(a.Trades, func(x, y api.Trade) int { return cmp.Compare(x.Time, y.Time) })
 		a.Trades = a.Trades[max(0, len(a.Trades)-100):]
 	case []api.Candle:
 		if len(msg) > 0 && msg[0].I == iv {
@@ -51,7 +62,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case api.Candle:
 		if msg.I == iv {
-			a.Candles = append(slices.DeleteFunc(a.Candles, func(c api.Candle) bool { return c.Time == msg.Time }), msg)
+			if i := slices.IndexFunc(a.Candles, func(c api.Candle) bool { return c.Time == msg.Time }); i >= 0 {
+				a.Candles[i] = msg
+			} else {
+				a.Candles = append(a.Candles, msg)
+			}
 		}
 	case []api.Funding:
 		a.Rates = msg

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"hy/internal/api"
 )
 
 var bars = []rune(" ▁▂▃▄▅▆▇█")
@@ -63,14 +65,12 @@ func (s Screen) chart(w, h int) string {
 		}
 	}
 	labels := make([]string, ch)
-	for r := range labels {
-		switch {
-		case r == lr:
-			labels[r] = lipgloss.NewStyle().Background(tone(up)).Foreground(ink).Bold(true).Render(fmt.Sprintf("%*s", lw-1, s.px(last.C))) + " "
-		case r%5 == 0 && (r-lr)*(r-lr) > 1:
-			labels[r] = fgf(dim, "%*s ", lw-1, s.px(inv(hi-float64(r)/float64(ch-1)*(hi-lo))))
+	for _, v := range steps(inv(lo), inv(hi), ch) {
+		if r := y(v); (r-lr)*(r-lr) > 1 {
+			labels[r] = fgf(dim, "%*s ", lw-1, s.px(v))
 		}
 	}
+	labels[lr] = lipgloss.NewStyle().Background(tone(up)).Foreground(ink).Bold(true).Render(fmt.Sprintf("%*s", lw-1, s.px(last.C))) + " "
 
 	rows := append(join(g), "")
 	for l := vh - 1; l >= 0; l-- {
@@ -91,7 +91,7 @@ func (s Screen) chart(w, h int) string {
 	d := last.C - last.O
 	head := readout("O", s.px(last.O), "H", s.px(last.H), "L", s.px(last.L), "C", s.px(last.C)) +
 		fgf(tone(d >= 0), "%+.*f (%+.2f%%)", dec(s.Market), d, d/last.O*100)
-	return axes(head, labels, rows, times, lw, pw)
+	return axes(head, labels, rows, times, api.Intervals[s.Interval].Dur, lw, pw)
 }
 
 // funding draws hourly funding as a step line around zero.
@@ -132,25 +132,41 @@ func (s Screen) funding(w, h int) string {
 		}
 	}
 	labels := make([]string, ch)
-	for r := range labels {
-		switch {
-		case r == zero:
-			labels[r] = fgf(dim, "%*s ", lw-1, "0%")
-		case r%5 == 0 && (r-zero)*(r-zero) > 1:
-			labels[r] = fgf(dim, "%*.4f%% ", lw-2, (hi-float64(r)/float64(ch-1)*(hi-lo))*100)
+	for _, v := range steps(lo, hi, ch) {
+		if r := y(v); (r-zero)*(r-zero) > 1 {
+			labels[r] = fgf(dim, "%*.4f%% ", lw-2, v*100)
 		}
 	}
+	labels[zero] = fgf(dim, "%*s ", lw-1, "0%")
 	times := make([]int64, len(rs))
 	for i, r := range rs {
 		times[i] = r.Time
 	}
 	now, pct := s.Market.Funding*100, func(v float64) string { return fmt.Sprintf("%.4f%%", v) }
 	head := readout("NOW", pct(now), "8H", pct(now*8), "APR", fmt.Sprintf("%.2f%%", now*24*365), "AVG", pct(sum/float64(len(rs))*100))
-	return axes(head, labels, join(g), times, lw, pw)
+	return axes(head, labels, join(g), times, time.Hour, lw, pw)
 }
 
-// axes frames plot rows: a spacer and readout above, labels on a left axis, times below.
-func axes(head string, labels, rows []string, times []int64, lw, pw int) string {
+// steps returns round values 1, 2 or 5 × 10^k apart between lo and hi, about one per four rows.
+func steps(lo, hi float64, rows int) []float64 {
+	raw := (hi - lo) / max(float64(rows)/4, 1)
+	mag := math.Pow(10, math.Floor(math.Log10(raw)))
+	step := mag
+	for _, m := range []float64{2, 5, 10} {
+		if math.Abs(m*mag-raw) < math.Abs(step-raw) {
+			step = m * mag
+		}
+	}
+	var vs []float64
+	for i := math.Ceil(lo / step); i*step <= hi; i++ {
+		vs = append(vs, i*step)
+	}
+	return vs
+}
+
+// axes frames plot rows: a spacer and readout above, labels on a left axis, and below,
+// times at the first candle of each round period (a day for 1h candles, like Hyperliquid).
+func axes(head string, labels, rows []string, times []int64, iv time.Duration, lw, pw int) string {
 	pad := strings.Repeat(" ", lw)
 	lines := []string{pad + fg(gray, "│"), pad + fg(gray, "│") + " " + head}
 	for i, row := range rows {
@@ -160,9 +176,31 @@ func axes(head string, labels, rows []string, times []int64, lw, pw int) string 
 		}
 		lines = append(lines, label+fg(gray, "│")+row)
 	}
-	ticks := []rune(strings.Repeat(" ", pw))
-	for x := 0; x+11 <= len(times); x += 16 {
-		copy(ticks[x:], []rune(time.UnixMilli(times[x]).Format("01/02 15:04")))
+	every := 16 * iv
+	for _, d := range []time.Duration{15, 30, 60, 180, 360, 720, 1440, 2880, 10080, 20160, 40320} {
+		if d*time.Minute >= every {
+			every = d * time.Minute
+			break
+		}
+	}
+	layout, loc := "01/02 15:04", time.Local
+	if every >= 24*time.Hour {
+		layout = "Jan 02"
+	}
+	if iv >= 24*time.Hour {
+		loc = time.UTC // daily candles open at UTC midnight
+	}
+	if iv >= 168*time.Hour {
+		layout = "Jan 2006"
+	}
+	_, off := time.Now().In(loc).Zone()
+	span, shift := every.Milliseconds(), int64(off)*1000
+	ticks, next := []rune(strings.Repeat(" ", pw)), 0
+	for x := 1; x < len(times); x++ {
+		if (times[x]+shift)/span != (times[x-1]+shift)/span && x >= next && x+len(layout) <= pw {
+			copy(ticks[x:], []rune(time.UnixMilli(times[x]).In(loc).Format(layout)))
+			next = x + len(layout) + 2
+		}
 	}
 	return strings.Join(append(lines, pad+fg(gray, "└"+strings.Repeat("─", pw)), pad+" "+fg(dim, string(ticks))), "\n")
 }
