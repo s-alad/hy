@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,15 +18,96 @@ var client = &http.Client{Timeout: 10 * time.Second}
 type req map[string]any
 
 type AssetCtx struct {
-	MarkPx, OraclePx, PrevDayPx, Funding, OpenInterest, DayNtlVlm float64 `json:",string"`
+	MarkPx, OraclePx, PrevDayPx, Funding, OpenInterest, DayNtlVlm, CirculatingSupply, TotalSupply float64 `json:",string"`
 }
 
+// Asset is a market: a perp on Hyperliquid or on a builder's dex (HIP-3), or a spot pair.
 type Asset struct {
-	Name        string
+	Name        string  // the API's id: BTC, xyz:CL, @107
+	Base, Quote string  // the website's names: WTIOIL and USDC for xyz:CL
+	Dex         string  // builder dex, empty on Hyperliquid's own perps
+	Category    string  // HIP-3 only: stocks, commodities, indices...
+	Contract    string  // spot only: the base token's id
+	Gecko       float64 // spot only: CoinGecko's market cap, where the website uses it
+	Spot        bool
 	SzDecimals  int
 	MaxLeverage int
 	IsDelisted  bool
 	AssetCtx
+}
+
+var (
+	// geckos are the tokens whose market cap the website takes from CoinGecko.
+	geckos = map[string]string{"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "FARTCOIN": "fartcoin", "PUMP": "pump-fun", "BONK": "bonk", "XPL": "plasma", "2Z": "doublezero", "MON": "monad", "ENA": "ethena", "ZEC": "zcash", "AVAX": "avalanche-2", "ANSEM": "the-black-bull", "SYN": "synapse-2"}
+	// excluded are the tokens the website shows no market cap for (placeholder supplies).
+	excluded = strings.Fields("AXL AAVE0 AVAX0 EX FEUSD LINK0 LTHREE MNT NEAR PEG PENGU QQQM REI SLAY SOLV SPX SPCXD THBILL USDE USDH USDHL USDT USDXL USH USR XAUT SEDA BZEC KHYPE MON MOVE STABLE SOON BNB0 AZTEC QONE SEI BASED DIME HMT NIL LMTS DRV MUX NVDAX SKHYX QQQX SPYX")
+)
+
+// Cap is a spot token's market cap by the website's rule: CoinGecko's figure if it
+// has one, else price × circulating supply (with its two corrections) unless excluded or over $100B.
+func (a Asset) Cap() float64 {
+	if a.Gecko > 0 {
+		return a.Gecko
+	}
+	supply := a.CirculatingSupply
+	switch a.Base {
+	case "KNTQ":
+		supply -= 730e6
+	case "VIRTUAL":
+		supply = 656301970
+	}
+	if v := a.MarkPx * supply; a.Spot && v <= 1e11 && !slices.Contains(excluded, a.Base) {
+		return v
+	}
+	return 0
+}
+
+// gecko fetches the market caps the website takes from CoinGecko; empty when that fails.
+func gecko() map[string]float64 {
+	var ids []string
+	for _, id := range geckos {
+		ids = append(ids, id)
+	}
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get("https://api.coingecko.com/api/v3/simple/price?ids=" + strings.Join(ids, ",") + "&vs_currencies=usd&include_market_cap=true")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var got map[string]struct {
+		Cap float64 `json:"usd_market_cap"`
+	}
+	json.NewDecoder(resp.Body).Decode(&got)
+	caps := map[string]float64{}
+	for name, id := range geckos {
+		caps[name] = got[id].Cap
+	}
+	return caps
+}
+
+// Pair names the market as the website does: BTC-USDC, HYPE/USDC.
+func (a Asset) Pair() string {
+	if a.Spot {
+		return a.Base + "/" + a.Quote
+	}
+	return a.Base + "-" + a.Quote
+}
+
+func (a Asset) Link() string {
+	if a.Spot {
+		return "https://app.hyperliquid.xyz/trade/" + a.Base + "/" + a.Quote
+	}
+	return "https://app.hyperliquid.xyz/trade/" + a.Name
+}
+
+// Kind labels the market in lists: perp, spot, or its dex.
+func (a Asset) Kind() string {
+	switch {
+	case a.Spot:
+		return "spot"
+	case a.Dex != "":
+		return a.Dex
+	}
+	return "perp"
 }
 
 type ActiveAssetCtx struct {
@@ -85,7 +168,7 @@ type Trade struct {
 	Side   string  // B buy, A sell
 	Px, Sz float64 `json:",string"`
 	Time   int64
-	Tid    int64 // trade ID
+	Tid    int64
 }
 
 type Candle struct {
@@ -101,9 +184,8 @@ type Funding struct {
 	Time        int64
 }
 
-// CoinOf names the market a message is about, so late ones from the
-// previous market can be dropped.
-func CoinOf(msg any) string {
+// Coin names the market a message is about, so late ones from the previous market can be dropped.
+func Coin(msg any) string {
 	switch m := msg.(type) {
 	case ActiveAssetCtx:
 		return m.Coin
@@ -164,30 +246,127 @@ func post(body req, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// Markets lists every live perp, busiest first.
+// aliases are the website's display names for wrapped spot tokens, by token index (UBTC shows as BTC).
+var aliases = map[int]string{197: "BTC", 221: "ETH", 254: "SOL", 269: "FARTCOIN", 268: "USDT", 292: "PENGU", 297: "XAUT", 299: "PUMP", 26: "PUMP-26", 19: "ANSEM-19", 293: "PEAR", 71: "PEAR-71", 844: "ANSEM", 319: "SPX", 320: "BONK", 246: "MNT", 343: "XPL", 361: "2Z", 338: "ENA", 164: "MONPRO", 383: "MON", 395: "MOVE", 419: "ZEC", 437: "SEI", 443: "VIRTUAL", 451: "AVAX", 513: "NEAR", 842: "NIL"}
+
+type token struct {
+	Name, TokenID     string
+	Index, SzDecimals int
+}
+
+func (t token) display() string { return cmp.Or(aliases[t.Index], t.Name) }
+
+type meta struct {
+	Universe        []Asset
+	CollateralToken int // the dex's quote, as a spot token index
+}
+
+func dex(name string) string {
+	d, _, ok := strings.Cut(name, ":")
+	if !ok {
+		return ""
+	}
+	return d
+}
+
+// Markets lists every live market on every dex, busiest first. It costs 160 of
+// Hyperliquid's 1200 request weight a minute, so callers keep the list a while.
 func Markets() ([]Asset, error) {
-	var meta struct{ Universe []Asset }
-	var ctxs []AssetCtx
-	if err := post(req{"type": "metaAndAssetCtxs"}, &[]any{&meta, &ctxs}); err != nil {
+	var metas []meta // Hyperliquid's own perps, then each builder's dex
+	if err := post(req{"type": "allPerpMetas"}, &metas); err != nil {
 		return nil, err
 	}
-	var ms []Asset
-	for i, m := range meta.Universe {
-		if !m.IsDelisted && i < len(ctxs) {
-			m.AssetCtx = ctxs[i]
-			ms = append(ms, m)
+	metas = slices.DeleteFunc(metas, func(m meta) bool {
+		return !slices.ContainsFunc(m.Universe, func(a Asset) bool { return !a.IsDelisted })
+	})
+	ctxs := make([][]AssetCtx, len(metas))
+	var spot struct {
+		Universe []struct {
+			Name   string
+			Tokens [2]int
 		}
+		Tokens []token
+	}
+	var sctxs []struct {
+		Coin string
+		AssetCtx
+	}
+	var notes [][2]json.RawMessage // [name, {displayName, category}] for HIP-3 assets
+
+	errs := make([]error, len(metas)+2)
+	var wg sync.WaitGroup
+	fetch := func(i int, body req, out any) {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs[i] = post(body, out) }()
+	}
+	for i, m := range metas {
+		fetch(i, req{"type": "metaAndAssetCtxs", "dex": dex(m.Universe[0].Name)}, &[]any{new(struct{}), &ctxs[i]})
+	}
+	fetch(len(metas), req{"type": "spotMetaAndAssetCtxs"}, &[]any{&spot, &sctxs})
+	fetch(len(metas)+1, req{"type": "perpConciseAnnotations"}, &notes)
+	var caps map[string]float64
+	wg.Add(1)
+	go func() { defer wg.Done(); caps = gecko() }()
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+
+	tokens := map[int]token{}
+	for _, t := range spot.Tokens {
+		tokens[t.Index] = t
+	}
+	info := map[string]struct{ DisplayName, Category string }{}
+	for _, n := range notes {
+		var name string
+		var v struct{ DisplayName, Category string }
+		if json.Unmarshal(n[0], &name) == nil && json.Unmarshal(n[1], &v) == nil {
+			info[name] = v
+		}
+	}
+	var ms []Asset
+	for i, m := range metas {
+		for j, a := range m.Universe {
+			if a.IsDelisted || j >= len(ctxs[i]) {
+				continue
+			}
+			a.Dex, a.AssetCtx, a.Category = dex(a.Name), ctxs[i][j], info[a.Name].Category
+			a.Base = cmp.Or(info[a.Name].DisplayName, strings.TrimPrefix(a.Name, a.Dex+":"))
+			a.Quote = tokens[m.CollateralToken].display()
+			ms = append(ms, a)
+		}
+	}
+	ctx := map[string]AssetCtx{}
+	for _, c := range sctxs {
+		ctx[c.Coin] = c.AssetCtx
+	}
+	for _, p := range spot.Universe {
+		b, q := tokens[p.Tokens[0]], tokens[p.Tokens[1]]
+		ms = append(ms, Asset{Name: p.Name, Base: b.display(), Quote: q.display(), Contract: b.TokenID, Gecko: caps[b.display()], Spot: true, SzDecimals: b.SzDecimals, AssetCtx: ctx[p.Name]})
 	}
 	slices.SortFunc(ms, func(a, b Asset) int { return cmp.Compare(b.DayNtlVlm, a.DayNtlVlm) })
 	return ms, nil
 }
 
-func Market(coin string) (Asset, error) {
+func Market(q string) (Asset, error) {
 	ms, err := Markets()
-	if i := slices.IndexFunc(ms, func(m Asset) bool { return strings.EqualFold(m.Name, coin) }); i >= 0 {
-		return ms[i], nil
+	if err != nil {
+		return Asset{}, err
 	}
-	return Asset{}, cmp.Or(err, fmt.Errorf("%s not found", coin))
+	return Find(ms, q)
+}
+
+// Find looks up a market by any name people use: the API's (xyz:CL, @107), the website's
+// pair (BTC-USDC, HYPE/USDC) or the base alone (btc, wtioil, cl), perps before spot.
+func Find(ms []Asset, q string) (Asset, error) {
+	for _, spot := range []bool{false, true} {
+		for _, m := range ms {
+			if m.Spot == spot && slices.ContainsFunc([]string{m.Name, m.Pair(), m.Base, strings.TrimPrefix(m.Name, m.Dex+":")}, func(n string) bool { return strings.EqualFold(n, q) }) {
+				return m, nil
+			}
+		}
+	}
+	return Asset{}, fmt.Errorf("%s not found", q)
 }
 
 func Candles(coin string, iv Interval) (c []Candle, err error) {
@@ -199,7 +378,7 @@ func Candles(coin string, iv Interval) (c []Candle, err error) {
 	return
 }
 
-// FundingHistory returns coin's hourly funding since a time, 500 hours (the most one call allows) at a time.
+// FundingHistory returns coin's hourly funding since a time, 500 hours (one call's limit) at a time.
 func FundingHistory(coin string, since time.Time) ([]Funding, error) {
 	var all []Funding
 	for start := since.UnixMilli(); ; {

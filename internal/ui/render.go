@@ -52,7 +52,7 @@ type Settings struct {
 	Funding, USD, Log bool
 	Picking           bool
 	Query             string
-	Pick              int
+	Pick, Tab         int // picker row and kind
 }
 
 // View stacks header, stats and a body of chart | book+trades between two rules.
@@ -67,9 +67,9 @@ func (s Screen) View() string {
 	top, body, bottom := rule(s.head(), cw, w, "┬", s.tail()), lipgloss.JoinHorizontal(lipgloss.Top, plot(cw, h), " ", s.side(h)), rule("", cw, w, "┴", "")
 	footer := hints("/", "markets", "← →", "interval", "q", "quit")
 	if s.Picking {
-		top = rule(fg(gray, "─ ")+bold(yellow, "/ ")+bold(white, s.Query)+fg(yellow, "▏ "), w-1, w, "", "")
+		top = rule(fg(gray, "─ ")+bold(yellow, "/ ")+bold(white, s.Query)+fg(yellow, "▏ ")+fg(gray, "─ ")+chips(s.Tab, Kinds...)+" ", w-1, w, "", "")
 		body, bottom = s.picker(w, h), rule("", w-1, w, "", "")
-		footer = hints("↑ ↓", "select", "⏎", "open", "esc", "back") + fg(dim, "   type to filter")
+		footer = hints("↑ ↓", "select", "⏎", "open", "⇥", "market type", "esc", "back") + fg(dim, "   type to filter")
 	}
 	if s.Err != nil {
 		footer += fg(red, "   "+s.Err.Error())
@@ -79,9 +79,8 @@ func (s Screen) View() string {
 }
 
 func (s Screen) header(w int) string {
-	name := s.Market.Name
-	link := style(yellow).Bold(true).Underline(true).Render("https://app.hyperliquid.xyz/trade/" + name)
-	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append([]string{"", link, ""}, banner(name+"/USDC")...), "\n"))
+	link := style(yellow).Bold(true).Underline(true).Render(s.Market.Link())
+	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append([]string{"", link, ""}, banner(s.Market.Pair())...), "\n"))
 	gap := strings.Repeat(" ", max(0, w-lipgloss.Width(logo)-lipgloss.Width(right)))
 	return bold(yellow, lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, right))
 }
@@ -89,11 +88,24 @@ func (s Screen) header(w int) string {
 func (s Screen) stats() string {
 	m := s.Market
 	chg, c := change(m)
-	next := time.Until(time.Now().Truncate(time.Hour).Add(time.Hour))
 	stat := func(label, value string, c lipgloss.Color) string {
 		return lipgloss.NewStyle().MarginRight(3).Render(fg(yellow, label) + "\n" + bold(c, value))
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	if m.Spot {
+		cap := "--"
+		if v := m.Cap(); v > 0 {
+			cap = num.Sprintf("%.0f %s", v, m.Quote)
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			stat("PRICE", s.px(m.MarkPx), white),
+			stat("24H CHANGE", chg, c),
+			stat("24H VOLUME", num.Sprintf("%.2f %s", m.DayNtlVlm, m.Quote), white),
+			stat("MARKET CAP", cap, white),
+			stat("CONTRACT", link("https://app.hyperliquid.xyz/explorer/token/"+m.Contract, m.Contract), white),
+		)
+	}
+	next := time.Until(time.Now().Truncate(time.Hour).Add(time.Hour))
+	row := []string{
 		stat("MARK", s.px(m.MarkPx), white),
 		stat("ORACLE", s.px(m.OraclePx), white),
 		stat("24H CHANGE", chg, c),
@@ -102,12 +114,20 @@ func (s Screen) stats() string {
 		stat("FUNDING", fmt.Sprintf("%.4f%%", m.Funding*100), white),
 		stat("COUNTDOWN", time.Time{}.Add(next).Format("15:04:05"), white),
 		stat("MAX LEVERAGE", fmt.Sprintf("%dx", m.MaxLeverage), white),
-	)
+	}
+	if m.Dex != "" {
+		row = append(row, stat("DEX", m.Dex, white), stat("CATEGORY", strings.ToLower(m.Category), white))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, row...)
 }
 
-// head is the chart's controls: price or funding, and the price chart's interval and scale.
+// head is the chart's controls: price or funding, interval and scale.
 func (s Screen) head() string {
-	out := fg(gray, "─ ") + toggle(!s.Funding, "PRICE") + toggle(s.Funding, "FUNDING") + fg(gray, " ─ ")
+	out := fg(gray, "─ ") + toggle(!s.Funding, "PRICE")
+	if !s.Market.Spot {
+		out += toggle(s.Funding, "FUNDING")
+	}
+	out += fg(gray, " ─ ")
 	if s.Funding {
 		return out + chips(s.FundIv, names(api.FundingIntervals)...) + " "
 	}
@@ -124,9 +144,9 @@ func names(ivs []api.Interval) []string {
 
 // tail is the book's controls: price grouping and size unit.
 func (s Screen) tail() string {
-	unit := s.Market.Name
+	unit := s.Market.Base
 	if s.USD {
-		unit = "USDC"
+		unit = s.Market.Quote
 	}
 	return fg(gray, "─ ") + lit("GROUP") + " " + chips(0, step(s.Market.MarkPx, api.Groupings[s.Group])) +
 		fg(gray, " ─ ") + lit("UNIT") + " " + chips(0, unit) + " "
@@ -142,6 +162,11 @@ func toggle(on bool, name string) string {
 
 // lit shows a control's name with its first letter, the key that drives it, bracketed: [F]UNDING.
 func lit(name string) string { return fg(dim, "[") + bold(yellow, name[:1]) + fg(dim, "]"+name[1:]) }
+
+// link underlines text and makes it open url in terminals that support hyperlinks (OSC 8).
+func link(url, text string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + lipgloss.NewStyle().Underline(true).Render(text) + "\x1b]8;;\x1b\\"
+}
 
 // hints shows keys and what they do, e.g. "/ markets   q quit".
 func hints(kv ...string) string {
@@ -177,9 +202,12 @@ func frame(h int, s string) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, bar, s)
 }
 
-// dec is Hyperliquid's price precision: 5 significant figures, at most 6-szDecimals decimals.
+// dec is Hyperliquid's price precision: 5 significant figures, at most 6-szDecimals decimals (8 for spot).
 func dec(m api.Asset) int {
 	d := 6 - m.SzDecimals
+	if m.Spot {
+		d += 2
+	}
 	if m.MarkPx > 0 {
 		d = min(d, 4-int(math.Floor(math.Log10(m.MarkPx))))
 	}

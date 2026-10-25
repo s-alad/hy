@@ -10,8 +10,7 @@ import (
 	"hy/internal/api"
 )
 
-// side draws the order book over recent trades. Its left edge is the body's
-// divider, which turns into a $ at the spread.
+// side draws the book over the trades; its left edge is the body's divider, a $ at the spread.
 func (s Screen) side(h int) string {
 	div := fg(gray, "│") + "  "
 	n := min(11, max((h-9)/2, 1)) // up to Hyperliquid's 11 levels a side; trades get the rest
@@ -30,8 +29,7 @@ func (s Screen) side(h int) string {
 		}
 		top = max(top, t)
 	}
-	// level shades a row's background by its total like Hyperliquid, lighting
-	// up the whole row when the latest change touched it.
+	// level shades a row by its total like the website, lighting the whole row when the latest change touched it.
 	level := func(side, i int) string {
 		if i >= len(tot[side]) {
 			return div

@@ -20,15 +20,14 @@ func main() {
 	}
 }
 
-// run opens the trade screen for a coin (HYPE by default), or with
-// "list [filter]" prints every market.
+// run opens a market's trade screen (HYPE by default), or lists markets: hy list [perps|spot|hip3|dex] [name].
 func run(args []string) error {
 	if len(args) > 0 && args[0] == "list" {
 		ms, err := api.Markets()
 		if err != nil {
 			return err
 		}
-		return page(ui.Table(ui.Filter(ms, strings.Join(args[1:], "")), -1))
+		return page(ui.Table(ui.Filter(ms, strings.Join(args[1:], " ")), -1))
 	}
 	coin := "HYPE"
 	if len(args) > 0 {
@@ -45,8 +44,7 @@ func run(args []string) error {
 	return err
 }
 
-// page shows text like bat does: in a terminal through less, scrollable with
-// the header row pinned (and printed as is when it fits); piped, as plain text.
+// page shows text like bat: through less in a terminal (header pinned, printed as is when it fits), plain when piped.
 func page(text string) error {
 	if fi, err := os.Stdout.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
 		less := exec.Command("less", "-RFS", "--header=1")

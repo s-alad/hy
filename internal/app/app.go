@@ -14,17 +14,17 @@ import (
 type App struct {
 	ui.Screen
 	stream *api.Stream
+	listed time.Time // when Markets was last fetched for the picker
 }
 
 func New(m api.Asset, s *api.Stream) *App {
-	return &App{ui.Screen{Market: m, Settings: ui.Settings{Interval: 5, FundIv: 1}}, s} // 1h candles, 8h funding
+	return &App{Screen: ui.Screen{Market: m, Settings: ui.Settings{Interval: 5, FundIv: 1}}, stream: s} // 1h candles, 8h funding
 }
 
 func (a *App) Init() tea.Cmd { return a.open(a.Market) }
 
-// Update takes key presses, the stream and fetched data.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if c := api.CoinOf(msg); c != "" && c != a.Market.Name {
+	if c := api.Coin(msg); c != "" && c != a.Market.Name {
 		return a, nil // left over from the previous market
 	}
 	iv := api.Intervals[a.Interval].Name
@@ -72,7 +72,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case []api.Funding:
 		a.Rates = msg
 	case []api.Asset:
-		a.Markets = msg
+		a.Markets, a.listed = msg, time.Now()
 	case error:
 		a.Err = msg
 	}
@@ -97,7 +97,7 @@ func (a *App) key(k string) tea.Cmd {
 		a.watch()
 		return a.history()
 	case "f":
-		a.Funding = !a.Funding
+		a.Funding = !a.Funding && !a.Market.Spot // spot has no funding
 		return a.rates()
 	case "p":
 		a.Funding = false
@@ -110,14 +110,15 @@ func (a *App) key(k string) tea.Cmd {
 		a.Log = !a.Log
 	case "/":
 		a.Picking, a.Query, a.Pick = true, "", 0
-		return func() tea.Msg { return result(api.Markets()) }
+		if time.Since(a.listed) > time.Minute { // the list is 8 requests; keep it a minute
+			return func() tea.Msg { return result(api.Markets()) }
+		}
 	}
 	return nil
 }
 
-// pick drives the market picker: type to filter, arrows to move, enter to open.
 func (a *App) pick(k tea.KeyMsg) tea.Cmd {
-	ms := ui.Filter(a.Markets, a.Query)
+	ms := a.Choices()
 	switch k.Type {
 	case tea.KeyCtrlC:
 		return tea.Quit
@@ -127,6 +128,8 @@ func (a *App) pick(k tea.KeyMsg) tea.Cmd {
 		if a.Pick < len(ms) {
 			return a.open(ms[a.Pick])
 		}
+	case tea.KeyTab:
+		a.Tab, a.Pick = (a.Tab+1)%len(ui.Kinds), 0
 	case tea.KeyUp:
 		a.Pick = max(a.Pick-1, 0)
 	case tea.KeyDown:
@@ -141,10 +144,9 @@ func (a *App) pick(k tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-// open switches to market m, keeping the view settings.
 func (a *App) open(m api.Asset) tea.Cmd {
-	a.Screen = ui.Screen{Settings: a.Settings, Market: m}
-	a.Picking = false
+	a.Screen = ui.Screen{Settings: a.Settings, Market: m, Markets: a.Markets}
+	a.Picking, a.Funding = false, a.Funding && !m.Spot
 	a.watch()
 	return tea.Batch(a.history(), a.rates())
 }
@@ -158,7 +160,7 @@ func (a *App) history() tea.Cmd {
 	return func() tea.Msg { return result(api.Candles(coin, iv)) }
 }
 
-// rates fetches ~100 days of funding, enough for the daily view, when it's missing or an hour old.
+// rates fetches ~100 days of funding when it's missing or an hour old.
 func (a *App) rates() tea.Cmd {
 	if n := len(a.Rates); !a.Funding || n > 0 && time.Since(time.UnixMilli(a.Rates[n-1].Time)) < time.Hour {
 		return nil

@@ -174,8 +174,7 @@ func steps(lo, hi float64, rows int) []float64 {
 	return vs
 }
 
-// axes frames plot rows: a spacer and readout above, labels on a left axis, and below,
-// times at the first candle of each round period (a day for 1h candles, like Hyperliquid).
+// axes frames plot rows: spacer and readout above, labels on the left, times below at each round period.
 func axes(head string, labels, rows []string, times []int64, iv time.Duration, lw, pw int) string {
 	pad := strings.Repeat(" ", lw)
 	lines := []string{pad + fg(gray, "│"), pad + fg(gray, "│") + " " + head}

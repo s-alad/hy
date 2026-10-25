@@ -12,8 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Stream keeps one websocket to Hyperliquid open, changing only the
-// subscriptions that Watch changes and resubscribing after a reconnect.
+// Stream keeps one websocket open, changing only the subscriptions Watch changes and resubscribing after a reconnect.
 type Stream struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
@@ -90,7 +89,6 @@ func (s *Stream) send(method string, subs []req) {
 	}
 }
 
-// without returns the subscriptions in a that are not in b.
 func without(a, b []req) []req {
 	return slices.DeleteFunc(slices.Clone(a), func(r req) bool {
 		return slices.ContainsFunc(b, func(o req) bool { return fmt.Sprint(o) == fmt.Sprint(r) })
@@ -98,15 +96,15 @@ func without(a, b []req) []req {
 }
 
 var channels = map[string]func([]byte) (any, error){
-	"activeAssetCtx": decode[ActiveAssetCtx],
-	"l2":             l2,
-	"bbo":            decode[BBO],
-	"trades":         decode[[]Trade],
-	"candle":         decode[Candle],
+	"activeAssetCtx":     decode[ActiveAssetCtx],
+	"activeSpotAssetCtx": decode[ActiveAssetCtx],
+	"l2":                 l2,
+	"bbo":                decode[BBO],
+	"trades":             decode[[]Trade],
+	"candle":             decode[Candle],
 }
 
-// l2 decodes the book feed: an L2Book snapshot, then L2Changes that arrive
-// plain or deflate-compressed.
+// l2 decodes the book feed: an L2Book snapshot, then L2Changes, plain or deflate-compressed.
 func l2(b []byte) (any, error) {
 	var m struct {
 		S *L2Book
