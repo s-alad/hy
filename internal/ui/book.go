@@ -14,14 +14,18 @@ import (
 // divider, which turns into a $ at the spread.
 func (s Screen) side(h int) string {
 	div := fg(gray, "│") + "  "
-	n := max((h-4)/4, 1) // book and trades split the height evenly
+	n := min(11, max((h-9)/2, 1)) // up to Hyperliquid's 11 levels a side; trades get the rest
+	amount, show := func(l api.Level) float64 { return l.Sz }, s.sz
+	if s.USD {
+		amount, show = func(l api.Level) float64 { return l.Sz * l.Px }, func(v float64) string { return num.Sprintf("%.0f", v) }
+	}
 	book := s.Book.Levels
 	var tot [2][]float64
 	top := 0.0
 	for i, lv := range book {
 		t := 0.0
 		for _, l := range lv[:min(n, len(lv))] {
-			t += l.Sz
+			t += amount(l)
 			tot[i] = append(tot[i], t)
 		}
 		top = max(top, t)
@@ -33,7 +37,7 @@ func (s Screen) side(h int) string {
 			return div
 		}
 		l, t := book[side][i], tot[side][i]
-		row := fmt.Sprintf("%-10s%12s%14s", s.px(l.Px), s.sz(l.Sz), s.sz(t))
+		row := fmt.Sprintf("%-10s%12s%14s", s.px(l.Px), show(amount(l)), show(t))
 		k, bg := int(math.Ceil(t/top*float64(len(row)))), depth[side]
 		if slices.ContainsFunc(s.Fresh.L[side], func(f api.L2Level) bool { return f.P == l.Px }) {
 			k, bg = len(row), flash[side]
@@ -52,7 +56,7 @@ func (s Screen) side(h int) string {
 		return out
 	}
 
-	lines := []string{div + fgf(yellow, "%-10s%12s%14s", "PRICE", "SIZE", "TOTAL")}
+	lines := []string{fg(gray, "│"), div + fgf(yellow, "%-10s%12s%14s", "PRICE", "SIZE", "TOTAL")}
 	for i := n - 1; i >= 0; i-- {
 		lines = append(lines, level(1, i))
 	}

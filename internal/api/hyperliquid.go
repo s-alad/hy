@@ -3,16 +3,12 @@ package api
 import (
 	"bytes"
 	"cmp"
-	"compress/flate"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 var client = &http.Client{Timeout: 10 * time.Second}
@@ -24,24 +20,31 @@ type AssetCtx struct {
 }
 
 type Asset struct {
-	Name       string
-	SzDecimals int
+	Name        string
+	SzDecimals  int
+	MaxLeverage int
+	IsDelisted  bool
 	AssetCtx
 }
 
-type ActiveAssetCtx struct{ Ctx AssetCtx }
+type ActiveAssetCtx struct {
+	Coin string
+	Ctx  AssetCtx
+}
 
 type Level struct {
 	Px, Sz float64 `json:",string"`
 }
 
 type L2Book struct {
+	Coin   string
 	Levels [2][]Level // bids, asks
 }
 
 // L2Change is an update from the website's undocumented "l2" book feed:
 // drop the levels at R's indices, then set L's levels by price (size 0 removes).
 type L2Change struct {
+	C string // coin
 	L [2][]L2Level
 	R [2][]int
 }
@@ -72,6 +75,7 @@ func (b L2Book) Apply(c L2Change) L2Book {
 }
 
 type Trade struct {
+	Coin   string
 	Side   string  // B buy, A sell
 	Px, Sz float64 `json:",string"`
 	Time   int64
@@ -80,8 +84,42 @@ type Trade struct {
 type Candle struct {
 	Time          int64   `json:"t"`
 	End           int64   `json:"T"`
-	I             string  // interval
+	S, I          string  // coin, interval
 	O, H, L, C, V float64 `json:",string"`
+}
+
+type Funding struct {
+	Coin        string
+	FundingRate float64 `json:",string"`
+	Time        int64
+}
+
+// CoinOf names the market a message is about, so late ones from the
+// previous market can be dropped.
+func CoinOf(msg any) string {
+	switch m := msg.(type) {
+	case ActiveAssetCtx:
+		return m.Coin
+	case L2Book:
+		return m.Coin
+	case L2Change:
+		return m.C
+	case Candle:
+		return m.S
+	case []Candle:
+		if len(m) > 0 {
+			return m[0].S
+		}
+	case []Trade:
+		if len(m) > 0 {
+			return m[0].Coin
+		}
+	case []Funding:
+		if len(m) > 0 {
+			return m[0].Coin
+		}
+	}
+	return ""
 }
 
 type Interval struct {
@@ -90,9 +128,16 @@ type Interval struct {
 }
 
 var Intervals = []Interval{
-	{"1m", time.Minute}, {"5m", 5 * time.Minute}, {"15m", 15 * time.Minute},
-	{"1h", time.Hour}, {"4h", 4 * time.Hour}, {"1d", 24 * time.Hour},
+	{"1m", time.Minute}, {"3m", 3 * time.Minute}, {"5m", 5 * time.Minute}, {"15m", 15 * time.Minute},
+	{"30m", 30 * time.Minute}, {"1h", time.Hour}, {"2h", 2 * time.Hour}, {"4h", 4 * time.Hour},
+	{"8h", 8 * time.Hour}, {"12h", 12 * time.Hour}, {"1d", 24 * time.Hour}, {"3d", 72 * time.Hour},
+	{"1w", 168 * time.Hour}, {"1M", 720 * time.Hour},
 }
+
+// Grouping merges book levels to S significant figures, in steps of M (2 or 5) at 5.
+type Grouping struct{ S, M int }
+
+var Groupings = []Grouping{{5, 1}, {5, 2}, {5, 5}, {4, 1}, {3, 1}, {2, 1}}
 
 func post(body req, out any) error {
 	b, _ := json.Marshal(body)
@@ -107,19 +152,30 @@ func post(body req, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func Market(coin string) (Asset, error) {
+// Markets lists every live perp, busiest first.
+func Markets() ([]Asset, error) {
 	var meta struct{ Universe []Asset }
 	var ctxs []AssetCtx
 	if err := post(req{"type": "metaAndAssetCtxs"}, &[]any{&meta, &ctxs}); err != nil {
-		return Asset{}, err
+		return nil, err
 	}
+	var ms []Asset
 	for i, m := range meta.Universe {
-		if strings.EqualFold(m.Name, coin) && i < len(ctxs) {
+		if !m.IsDelisted && i < len(ctxs) {
 			m.AssetCtx = ctxs[i]
-			return m, nil
+			ms = append(ms, m)
 		}
 	}
-	return Asset{}, fmt.Errorf("%s not found", coin)
+	slices.SortFunc(ms, func(a, b Asset) int { return cmp.Compare(b.DayNtlVlm, a.DayNtlVlm) })
+	return ms, nil
+}
+
+func Market(coin string) (Asset, error) {
+	ms, err := Markets()
+	if i := slices.IndexFunc(ms, func(m Asset) bool { return strings.EqualFold(m.Name, coin) }); i >= 0 {
+		return ms[i], nil
+	}
+	return Asset{}, cmp.Or(err, fmt.Errorf("%s not found", coin))
 }
 
 func Token(name string) (string, error) {
@@ -146,80 +202,8 @@ func Candles(coin string, iv Interval) (c []Candle, err error) {
 	return
 }
 
-var channels = map[string]func([]byte) (any, error){
-	"activeAssetCtx": decode[ActiveAssetCtx],
-	"l2":             l2,
-	"trades":         decode[[]Trade],
-	"candle":         decode[Candle],
-}
-
-// l2 decodes the book feed: an L2Book snapshot, then L2Changes that arrive
-// plain or deflate-compressed.
-func l2(b []byte) (any, error) {
-	var m struct {
-		S *L2Book
-		U L2Change
-		C []byte
-	}
-	err := json.Unmarshal(b, &m)
-	switch {
-	case err != nil:
-		return nil, err
-	case m.S != nil:
-		return *m.S, nil
-	case m.C != nil:
-		err = json.NewDecoder(flate.NewReader(bytes.NewReader(m.C))).Decode(&m.U)
-	}
-	return m.U, err
-}
-
-// Watch streams coin's context, book, trades and candles for every interval
-// to send, returning when the connection drops or goes quiet for a minute.
-func Watch(coin string, send func(any)) error {
-	c, _, err := websocket.DefaultDialer.Dial("wss://api.hyperliquid.xyz/ws", nil)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	sub := func(method string, s req) error { return c.WriteJSON(req{"method": method, "subscription": s}) }
-	book := req{"type": "l2", "c": coin}
-	subs := []req{{"type": "activeAssetCtx", "coin": coin}, {"type": "trades", "coin": coin}, book}
-	for _, iv := range Intervals {
-		subs = append(subs, req{"type": "candle", "coin": coin, "interval": iv.Name})
-	}
-	for _, s := range subs {
-		if err := sub("subscribe", s); err != nil {
-			return err
-		}
-	}
-	for synced := time.Now(); ; {
-		var m struct {
-			Channel string
-			Data    json.RawMessage
-		}
-		c.SetReadDeadline(time.Now().Add(time.Minute))
-		if err := c.ReadJSON(&m); err != nil {
-			return err
-		}
-		if f := channels[m.Channel]; f != nil {
-			v, err := f(m.Data)
-			if err != nil {
-				return err
-			}
-			send(v)
-		}
-		// l2 only sends changes, so resubscribe each minute for a fresh snapshot
-		if time.Since(synced) > time.Minute {
-			synced = time.Now()
-			if err := errors.Join(sub("unsubscribe", book), sub("subscribe", book)); err != nil {
-				return err
-			}
-		}
-	}
-}
-
-func decode[T any](b []byte) (any, error) {
-	var v T
-	err := json.Unmarshal(b, &v)
-	return v, err
+// FundingHistory returns coin's hourly funding for the last 500 hours, the most one call allows.
+func FundingHistory(coin string) (f []Funding, err error) {
+	err = post(req{"type": "fundingHistory", "coin": coin, "startTime": time.Now().Add(-500 * time.Hour).UnixMilli()}, &f)
+	return
 }

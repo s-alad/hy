@@ -23,6 +23,7 @@ var (
 	gray   = lipgloss.Color("#3f474f")
 	tex    = lipgloss.Color("#262c33")
 	ink    = lipgloss.Color("#0c0f12")
+	picked = lipgloss.Color("#2a3112") // yellow at 15%
 
 	depth = [2]lipgloss.Color{"#183225", "#2f191a"} // bids, asks: green and red at 15%
 	flash = [2]lipgloss.Color{"#27603d", "#5f2625"} // at 35%
@@ -31,15 +32,26 @@ var (
 )
 
 type Screen struct {
-	Market   api.Asset
-	Token    string
-	Book     api.L2Book
-	Fresh    api.L2Change // the book's latest change, flashed
-	Trades   []api.Trade
-	Candles  []api.Candle
-	Interval int
-	Err      error
-	W, H     int
+	Settings
+	Market  api.Asset
+	Token   string
+	Book    api.L2Book
+	Fresh   api.L2Change // the book's latest change, flashed
+	Trades  []api.Trade
+	Candles []api.Candle
+	Rates   []api.Funding
+	Markets []api.Asset // for the picker
+	Err     error
+}
+
+// Settings survive switching markets.
+type Settings struct {
+	W, H              int
+	Interval, Group   int
+	Funding, USD, Log bool
+	Picking           bool
+	Query             string
+	Pick              int
 }
 
 // View stacks header, stats and a body of chart | book+trades between two rules.
@@ -47,27 +59,29 @@ type Screen struct {
 func (s Screen) View() string {
 	w, h := max(s.W-6, 60), max(s.H-16, 8)
 	cw := w - 40
-	footer := fg(dim, "1-6 interval   q quit")
+	plot := s.chart
+	if s.Funding {
+		plot = s.funding
+	}
+	top, body, bottom := rule(s.head(), cw, w, "┬", s.tail()), lipgloss.JoinHorizontal(lipgloss.Top, plot(cw, h), " ", s.side(h)), rule("", cw, w, "┴", "")
+	keys := "/ markets   ← → interval   f funding   g grouping   u units   l log   q quit"
+	if s.Picking {
+		top = rule(fg(gray, "─ ")+bold(yellow, "/ ")+bold(white, s.Query)+fg(yellow, "▏ "), w-1, w, "", "")
+		body, bottom = s.picker(w, h), rule("", w-1, w, "", "")
+		keys = "↑ ↓ select   ⏎ open   esc back   type to filter"
+	}
+	footer := fg(dim, keys)
 	if s.Err != nil {
 		footer += fg(red, "   "+s.Err.Error())
 	}
 	return frame(s.H, lipgloss.NewStyle().MaxWidth(w).Render(lipgloss.JoinVertical(lipgloss.Left,
-		s.header(w),
-		fg(yellow, strings.Repeat("─", w)),
-		"",
-		s.stats(),
-		"",
-		rule(s.chips(), cw, w, "┬"),
-		lipgloss.JoinHorizontal(lipgloss.Top, s.chart(cw, h), " ", s.side(h)),
-		rule("", cw, w, "┴"),
-		footer,
-	)))
+		s.header(w), fg(yellow, strings.Repeat("─", w)), "", s.stats(), "", top, body, bottom, footer)))
 }
 
 func (s Screen) header(w int) string {
 	name := s.Market.Name
 	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append(
-		[]string{bits(name), lipgloss.NewStyle().Underline(true).Render(s.Token), ""},
+		[]string{bits(name), style(yellow).Bold(true).Underline(true).Render(s.Token), ""},
 		banner(name+"/USDC")...), "\n"))
 	gap := strings.Repeat(" ", max(0, w-lipgloss.Width(logo)-lipgloss.Width(right)))
 	return bold(yellow, lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, right))
@@ -75,7 +89,7 @@ func (s Screen) header(w int) string {
 
 func (s Screen) stats() string {
 	m := s.Market
-	chg := m.MarkPx - m.PrevDayPx
+	chg, c := change(m)
 	next := time.Until(time.Now().Truncate(time.Hour).Add(time.Hour))
 	stat := func(label, value string, c lipgloss.Color) string {
 		return lipgloss.NewStyle().MarginRight(3).Render(fg(yellow, label) + "\n" + bold(c, value))
@@ -83,46 +97,91 @@ func (s Screen) stats() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		stat("MARK", s.px(m.MarkPx), white),
 		stat("ORACLE", s.px(m.OraclePx), white),
-		stat("24H CHANGE", fmt.Sprintf("%+.*f / %+.2f%%", s.dec(), chg, chg/m.PrevDayPx*100), tone(chg >= 0)),
+		stat("24H CHANGE", chg, c),
 		stat("24H VOLUME", num.Sprintf("$%.2f", m.DayNtlVlm), white),
 		stat("OPEN INTEREST", num.Sprintf("$%.2f", m.OpenInterest*m.MarkPx), white),
 		stat("FUNDING", fmt.Sprintf("%.4f%%", m.Funding*100), white),
 		stat("COUNTDOWN", time.Time{}.Add(next).Format("15:04:05"), white),
+		stat("MAX LEVERAGE", fmt.Sprintf("%dx", m.MaxLeverage), white),
 	)
 }
 
-func (s Screen) chips() string {
-	out := fg(gray, "─ ")
-	for i, iv := range api.Intervals {
-		if i == s.Interval {
-			out += lipgloss.NewStyle().Background(yellow).Foreground(ink).Bold(true).Render(" " + iv.Name + " ")
-		} else {
-			out += fg(dim, " "+iv.Name+" ")
-		}
+// head is the chart's controls: price or funding, and the price chart's interval and scale.
+func (s Screen) head() string {
+	if s.Funding {
+		return fg(gray, "─ ") + chips(1, "PRICE", "FUNDING") + " "
+	}
+	var names []string
+	for _, iv := range api.Intervals {
+		names = append(names, iv.Name)
+	}
+	out := fg(gray, "─ ") + chips(0, "PRICE", "FUNDING") + fg(gray, " ─ ") + chips(s.Interval, names...)
+	if s.Log {
+		out += fg(gray, " ─ ") + chips(0, "LOG")
 	}
 	return out + " "
 }
 
-// dec is Hyperliquid's price precision: 5 significant figures, at most 6-szDecimals decimals.
-func (s Screen) dec() int {
-	d := 6 - s.Market.SzDecimals
-	if p := s.Market.MarkPx; p > 0 {
-		d = min(d, 4-int(math.Floor(math.Log10(p))))
+// tail is the book's controls: price grouping and size unit.
+func (s Screen) tail() string {
+	unit := s.Market.Name
+	if s.USD {
+		unit = "USDC"
 	}
-	return max(d, 0)
+	return fg(gray, "─ ") + chips(0, step(s.Market.MarkPx, api.Groupings[s.Group])) + fg(gray, " ─ ") + chips(0, unit) + " "
 }
 
-func (s Screen) px(v float64) string { return strconv.FormatFloat(v, 'f', s.dec(), 64) }
-func (s Screen) sz(v float64) string { return num.Sprintf("%.*f", s.Market.SzDecimals, v) }
+// chips draws names as controls, highlighting the one at on.
+func chips(on int, names ...string) string {
+	out := ""
+	for i, n := range names {
+		if i == on {
+			out += lipgloss.NewStyle().Background(yellow).Foreground(ink).Bold(true).Render(" " + n + " ")
+		} else {
+			out += fg(dim, " "+n+" ")
+		}
+	}
+	return out
+}
 
-func rule(head string, cw, w int, joint string) string {
-	return head + fg(gray, strings.Repeat("─", max(0, cw+1-lipgloss.Width(head)))+joint+strings.Repeat("─", w-cw-2))
+// rule draws a divider with head on the left and tail after the joint at cw+1.
+func rule(head string, cw, w int, joint, tail string) string {
+	return head + fg(gray, strings.Repeat("─", max(0, cw+1-lipgloss.Width(head)))+joint) + tail +
+		fg(gray, strings.Repeat("─", max(0, w-cw-1-lipgloss.Width(joint)-lipgloss.Width(tail))))
 }
 
 func frame(h int, s string) string {
 	s = lipgloss.NewStyle().Padding(1, 2).Render(s)
 	bar := lipgloss.NewStyle().Background(yellow).Width(2).Height(max(h, lipgloss.Height(s))).Render("")
 	return lipgloss.JoinHorizontal(lipgloss.Top, bar, s)
+}
+
+// dec is Hyperliquid's price precision: 5 significant figures, at most 6-szDecimals decimals.
+func dec(m api.Asset) int {
+	d := 6 - m.SzDecimals
+	if m.MarkPx > 0 {
+		d = min(d, 4-int(math.Floor(math.Log10(m.MarkPx))))
+	}
+	return max(d, 0)
+}
+
+func px(m api.Asset, v float64) string { return strconv.FormatFloat(v, 'f', dec(m), 64) }
+func (s Screen) px(v float64) string   { return px(s.Market, v) }
+func (s Screen) sz(v float64) string   { return num.Sprintf("%.*f", s.Market.SzDecimals, v) }
+
+// change is m's 24h move, e.g. "+0.001467 / +3.44%", and its color.
+func change(m api.Asset) (string, lipgloss.Color) {
+	d := m.MarkPx - m.PrevDayPx
+	return fmt.Sprintf("%+.*f / %+.2f%%", dec(m), d, d/m.PrevDayPx*100), tone(d >= 0)
+}
+
+// step is a grouping's price increment at price p, e.g. 0.000005 or 1000.
+func step(p float64, g api.Grouping) string {
+	e := int(math.Floor(math.Log10(max(p, 1e-9)))) - g.S + 1
+	if e >= 0 {
+		return strconv.Itoa(g.M) + strings.Repeat("0", e)
+	}
+	return "0." + strings.Repeat("0", -e-1) + strconv.Itoa(g.M)
 }
 
 func bits(s string) string {
