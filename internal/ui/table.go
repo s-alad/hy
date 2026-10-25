@@ -34,7 +34,7 @@ var (
 		return fmt.Sprintf("%.4f%%", m.Funding*800), white
 	})}
 	volume = column{"24H VOLUME", 18, func(m api.Asset) (string, lipgloss.Color) { return num.Sprintf("$%.0f", m.DayNtlVlm), white }}
-	mcap   = column{"MARKET CAP", 22, func(m api.Asset) (string, lipgloss.Color) {
+	mcap   = column{"MARKET CAP", 20, func(m api.Asset) (string, lipgloss.Color) {
 		if v := m.Cap(); v > 0 {
 			return num.Sprintf("$%.0f", v), white
 		}
@@ -59,13 +59,13 @@ func perp(f cell) cell {
 func Table(ms []api.Asset, sel int) string {
 	cols := []column{market, price, move, volume, mcap}
 	if len(ms) == 0 || slices.ContainsFunc(ms, func(m api.Asset) bool { return !m.Spot }) {
-		cols = []column{market, kind, leverage, price, move, funding, volume, interest}
+		cols = []column{market, kind, leverage, price, move, funding, volume, interest, mcap}
 	}
-	head := ""
+	head := "" // one styled run, so less's underline on a pinned header spans the whole row
 	for _, c := range cols {
-		head += fgf(yellow, "%*s", c.w, c.name)
+		head += fmt.Sprintf("%*s", c.w, c.name)
 	}
-	lines := []string{head}
+	lines := []string{fg(yellow, head)}
 	for i, m := range ms {
 		row := ""
 		for j, c := range cols {

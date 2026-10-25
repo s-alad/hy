@@ -165,7 +165,7 @@ func lit(name string) string { return fg(dim, "[") + bold(yellow, name[:1]) + fg
 
 // link underlines text and makes it open url in terminals that support hyperlinks (OSC 8).
 func link(url, text string) string {
-	return "\x1b]8;;" + url + "\x1b\\" + lipgloss.NewStyle().Underline(true).Render(text) + "\x1b]8;;\x1b\\"
+	return "\x1b]8;;" + url + "\x1b\\" + style(white).Bold(true).Underline(true).Render(text) + "\x1b]8;;\x1b\\"
 }
 
 // hints shows keys and what they do, e.g. "/ markets   q quit".
