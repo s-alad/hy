@@ -24,7 +24,7 @@ func (s Screen) chart(w, h int) string {
 	for _, c := range cs {
 		peak = max(peak, c.H)
 	}
-	lw := len(s.px(peak*2)) + 1 // *2 leaves room for the padded top label
+	lw := len(s.px(peak*2)) + 2 // room for the padded top label and the last price's tag
 	pw := w - lw - 1
 	cs = cs[max(0, len(cs)-pw):]
 
@@ -70,7 +70,8 @@ func (s Screen) chart(w, h int) string {
 			labels[r] = fgf(dim, "%*s ", lw-1, s.px(v))
 		}
 	}
-	labels[lr] = lipgloss.NewStyle().Background(tone(up)).Foreground(ink).Bold(true).Render(fmt.Sprintf("%*s", lw-1, s.px(last.C))) + " "
+	tag := " " + s.px(last.C) + " "
+	labels[lr] = strings.Repeat(" ", max(0, lw-len(tag))) + lipgloss.NewStyle().Background(tone(up)).Foreground(ink).Bold(true).Render(tag)
 
 	rows := append(join(g), "")
 	for l := vh - 1; l >= 0; l-- {

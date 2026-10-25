@@ -16,17 +16,17 @@ import (
 
 var (
 	yellow = lipgloss.Color("#dcfe52")
-	green  = lipgloss.Color("#5af78e")
-	red    = lipgloss.Color("#f85149")
-	white  = lipgloss.Color("#e6edf3")
-	dim    = lipgloss.Color("#7d8790")
-	gray   = lipgloss.Color("#3f474f")
-	tex    = lipgloss.Color("#262c33")
-	ink    = lipgloss.Color("#0c0f12")
-	picked = lipgloss.Color("#2a3112") // yellow at 15%
+	green  = lipgloss.Color("#1fa67d") // Hyperliquid's buy
+	red    = lipgloss.Color("#ed7088") // and sell
+	white  = lipgloss.Color("#f6fefd")
+	dim    = lipgloss.Color("#9aa3a4")
+	gray   = lipgloss.Color("#3a4a50")
+	tex    = lipgloss.Color("#1e2a2f")
+	ink    = lipgloss.Color("#0f1a1f") // Hyperliquid's surface
+	picked = lipgloss.Color("#2e3c27") // yellow at 15% over ink
 
-	depth = [2]lipgloss.Color{"#183225", "#2f191a"} // bids, asks: green and red at 15%
-	flash = [2]lipgloss.Color{"#27603d", "#5f2625"} // at 35%
+	depth = [2]lipgloss.Color{"#112f2d", "#30272f"} // bids, asks: green and red at 15% over ink
+	flash = [2]lipgloss.Color{"#154b40", "#5d3844"} // at 35%
 
 	num = message.NewPrinter(language.English)
 )
