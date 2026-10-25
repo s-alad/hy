@@ -34,7 +34,6 @@ var (
 type Screen struct {
 	Settings
 	Market  api.Asset
-	Token   string
 	Book    api.L2Book
 	Fresh   api.L2Change // the book's latest change, flashed
 	Trades  []api.Trade
@@ -80,9 +79,8 @@ func (s Screen) View() string {
 
 func (s Screen) header(w int) string {
 	name := s.Market.Name
-	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append(
-		[]string{bits(name), style(yellow).Bold(true).Underline(true).Render(s.Token), ""},
-		banner(name+"/USDC")...), "\n"))
+	link := style(yellow).Bold(true).Underline(true).Render("https://app.hyperliquid.xyz/trade/" + name)
+	right := lipgloss.NewStyle().Align(lipgloss.Right).Render(strings.Join(append([]string{"", link, ""}, banner(name+"/USDC")...), "\n"))
 	gap := strings.Repeat(" ", max(0, w-lipgloss.Width(logo)-lipgloss.Width(right)))
 	return bold(yellow, lipgloss.JoinHorizontal(lipgloss.Top, logo, gap, right))
 }
@@ -182,14 +180,6 @@ func step(p float64, g api.Grouping) string {
 		return strconv.Itoa(g.M) + strings.Repeat("0", e)
 	}
 	return "0." + strings.Repeat("0", -e-1) + strconv.Itoa(g.M)
-}
-
-func bits(s string) string {
-	b := make([]string, len(s))
-	for i := range len(s) {
-		b[i] = fmt.Sprintf("%08b", s[i])
-	}
-	return strings.Join(b, " ")
 }
 
 func tone(up bool) lipgloss.Color {

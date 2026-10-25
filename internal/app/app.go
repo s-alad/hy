@@ -9,8 +9,6 @@ import (
 	"hy/internal/ui"
 )
 
-type token string
-
 type App struct {
 	ui.Screen
 	stream *api.Stream
@@ -57,8 +55,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.Rates = msg
 	case []api.Asset:
 		a.Markets = msg
-	case token:
-		a.Token = string(msg)
 	case error:
 		a.Err = msg
 	}
@@ -125,8 +121,7 @@ func (a *App) open(m api.Asset) tea.Cmd {
 	a.Screen = ui.Screen{Settings: a.Settings, Market: m}
 	a.Picking = false
 	a.watch()
-	name := m.Name
-	return tea.Batch(a.history(), a.rates(), func() tea.Msg { t, _ := api.Token(name); return token(t) })
+	return tea.Batch(a.history(), a.rates())
 }
 
 func (a *App) watch() {

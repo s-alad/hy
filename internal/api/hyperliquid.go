@@ -178,21 +178,6 @@ func Market(coin string) (Asset, error) {
 	return Asset{}, cmp.Or(err, fmt.Errorf("%s not found", coin))
 }
 
-func Token(name string) (string, error) {
-	var meta struct {
-		Tokens []struct{ Name, TokenID string }
-	}
-	if err := post(req{"type": "spotMeta"}, &meta); err != nil {
-		return "", err
-	}
-	for _, t := range meta.Tokens {
-		if t.Name == name {
-			return t.TokenID, nil
-		}
-	}
-	return "", nil
-}
-
 func Candles(coin string, iv Interval) (c []Candle, err error) {
 	end := time.Now()
 	err = post(req{"type": "candleSnapshot", "req": req{
