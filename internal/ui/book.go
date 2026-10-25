@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 )
@@ -31,7 +32,7 @@ func (s Screen) side(h int) string {
 			fg(c, strings.Repeat("█", k)) + fg(tex, strings.Repeat("░", 4-k))
 	}
 
-	n := max((h-14)/2, 1)
+	n := max((h-4)/4, 1) // book and trades split the height evenly
 	lines := []string{div + fgf(yellow, "%-10s%10s%11s", "PRICE", "SIZE", "TOTAL")}
 	for i := n - 1; i >= 0; i-- {
 		lines = append(lines, level(1, i))
@@ -46,7 +47,7 @@ func (s Screen) side(h int) string {
 		lines = append(lines, level(0, i))
 	}
 	lines = append(lines, fg(gray, "├"+strings.Repeat("─", 38)), div+fgf(yellow, "%-10s%10s%11s", "PRICE", "SIZE", "TIME"))
-	for _, t := range s.Trades {
+	for _, t := range slices.Backward(s.Trades) {
 		lines = append(lines, div+fgf(tone(t.Side == "B"), "%-10s", s.px(t.Px))+fgf(white, "%10s", s.sz(t.Sz))+
 			fgf(dim, "%11s", time.UnixMilli(t.Time).Format("15:04:05")))
 	}

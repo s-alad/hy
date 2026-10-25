@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -27,6 +28,13 @@ func run() error {
 		return err
 	}
 	token, _ := api.Token(m.Name)
-	_, err = tea.NewProgram(app.New(m, token), tea.WithAltScreen()).Run()
+	p := tea.NewProgram(app.New(m, token), tea.WithAltScreen())
+	go func() {
+		for {
+			p.Send(api.Watch(m.Name, func(v any) { p.Send(v) }))
+			time.Sleep(3 * time.Second) // stays under 30 new connections a minute
+		}
+	}()
+	_, err = p.Run()
 	return err
 }
