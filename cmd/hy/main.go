@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,10 +25,10 @@ func main() {
 func run(args []string) error {
 	if len(args) > 0 && args[0] == "list" {
 		ms, err := api.Markets()
-		if err == nil {
-			fmt.Println(ui.Table(ui.Filter(ms, strings.Join(args[1:], "")), -1))
+		if err != nil {
+			return err
 		}
-		return err
+		return page(ui.Table(ui.Filter(ms, strings.Join(args[1:], "")), -1))
 	}
 	coin := "HYPE"
 	if len(args) > 0 {
@@ -41,5 +42,19 @@ func run(args []string) error {
 	p := tea.NewProgram(app.New(m, s), tea.WithAltScreen())
 	go s.Run(func(v any) { p.Send(v) })
 	_, err = p.Run()
+	return err
+}
+
+// page shows text like bat does: in a terminal through less, scrollable with
+// the header row pinned (and printed as is when it fits); piped, as plain text.
+func page(text string) error {
+	if fi, err := os.Stdout.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+		less := exec.Command("less", "-RFS", "--header=1")
+		less.Stdin, less.Stdout, less.Stderr = strings.NewReader(text+"\n"), os.Stdout, os.Stderr
+		if less.Run() == nil {
+			return nil
+		}
+	}
+	_, err := fmt.Println(text)
 	return err
 }
